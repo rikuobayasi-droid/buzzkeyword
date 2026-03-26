@@ -101,15 +101,13 @@ def inject_css():
     st.markdown(CSS, unsafe_allow_html=True)
 
 def setup_sidebar():
-    """全ページ共通サイドバー"""
     with st.sidebar:
-        # ✅ 修正ポイント（app.py → app）
-        st.page_link("app", label="🌸 Tabibiyori Dashboard", icon=None)
+        # ❌ 完全に削除
+        # st.page_link("app", label="🌸 Tabibiyori Dashboard")
 
-        st.markdown(
-            '<div style="font-size:.62rem;color:#9ca3af;letter-spacing:2px;text-transform:uppercase;padding:.2rem .5rem .8rem;">Operations Dashboard</div>',
-            unsafe_allow_html=True
-        )
+        # ✅ 代わりにこれ
+        if st.button("🌸 Tabibiyori Dashboard"):
+            st.switch_page("app.py")
 
         st.markdown(
             '<div style="font-size:.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#9ca3af;padding:.8rem .5rem .3rem;">📱 SNS</div>',
