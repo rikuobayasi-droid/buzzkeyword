@@ -1,0 +1,15 @@
+# Secrets — 絶対にGitHubにアップしないこと
+.streamlit/secrets.toml
+
+# ローカルDB（Supabase移行後は不要）
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# OS
+.DS_Store
+Thumbs.db
