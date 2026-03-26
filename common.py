@@ -103,29 +103,57 @@ def inject_css():
 def setup_sidebar():
     """全ページ共通サイドバー"""
     with st.sidebar:
-        st.page_link("app.py", label="🌸 Tabibiyori Dashboard", icon=None)
-        st.markdown('<div style="font-size:.62rem;color:#9ca3af;letter-spacing:2px;text-transform:uppercase;padding:.2rem .5rem .8rem;">Operations Dashboard</div>', unsafe_allow_html=True)
-        st.markdown('<div style="font-size:.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#9ca3af;padding:.8rem .5rem .3rem;">📱 SNS</div>', unsafe_allow_html=True)
+        # ✅ 修正ポイント（app.py → app）
+        st.page_link("app", label="🌸 Tabibiyori Dashboard", icon=None)
+
+        st.markdown(
+            '<div style="font-size:.62rem;color:#9ca3af;letter-spacing:2px;text-transform:uppercase;padding:.2rem .5rem .8rem;">Operations Dashboard</div>',
+            unsafe_allow_html=True
+        )
+
+        st.markdown(
+            '<div style="font-size:.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#9ca3af;padding:.8rem .5rem .3rem;">📱 SNS</div>',
+            unsafe_allow_html=True
+        )
+
         st.page_link("pages/01_sns_trend.py",       label="トレンド")
-        st.page_link("pages/02_sns_dm.py",           label="DM")
-        st.page_link("pages/03_sns_acquisition.py",  label="集客")
-        st.page_link("pages/04_sns_ads.py",          label="広告")
-        st.markdown('<div style="font-size:.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#9ca3af;padding:.8rem .5rem .3rem;">👤 顧客管理</div>', unsafe_allow_html=True)
-        st.page_link("pages/05_crm_customers.py",    label="顧客関係")
-        st.page_link("pages/06_crm_products.py",     label="商品関連")
-        st.markdown('<div style="font-size:.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#9ca3af;padding:.8rem .5rem .3rem;">💴 財務経理</div>', unsafe_allow_html=True)
-        st.page_link("pages/07_finance_sales.py",    label="売上")
-        st.page_link("pages/08_finance_expense.py",  label="経費")
-        st.page_link("pages/09_finance_roi.py",      label="費用対効果")
-        st.page_link("pages/10_finance_bs.py",       label="BS")
-        st.page_link("pages/11_finance_pl.py",       label="PL")
+        st.page_link("pages/02_sns_dm.py",          label="DM")
+        st.page_link("pages/03_sns_acquisition.py", label="集客")
+        st.page_link("pages/04_sns_ads.py",         label="広告")
+
+        st.markdown(
+            '<div style="font-size:.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#9ca3af;padding:.8rem .5rem .3rem;">👤 顧客管理</div>',
+            unsafe_allow_html=True
+        )
+
+        st.page_link("pages/05_crm_customers.py", label="顧客関係")
+        st.page_link("pages/06_crm_products.py",  label="商品関連")
+
+        st.markdown(
+            '<div style="font-size:.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#9ca3af;padding:.8rem .5rem .3rem;">💴 財務経理</div>',
+            unsafe_allow_html=True
+        )
+
+        st.page_link("pages/07_finance_sales.py",   label="売上")
+        st.page_link("pages/08_finance_expense.py", label="経費")
+        st.page_link("pages/09_finance_roi.py",     label="費用対効果")
+        st.page_link("pages/10_finance_bs.py",      label="BS")
+        st.page_link("pages/11_finance_pl.py",      label="PL")
+
         st.markdown("---")
+
         from db import get_client
         try:
             get_client()
-            st.markdown('<div style="color:#15803d;font-size:.75rem;font-weight:600;">✅ Supabase接続済み</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div style="color:#15803d;font-size:.75rem;font-weight:600;">✅ Supabase接続済み</div>',
+                unsafe_allow_html=True
+            )
         except Exception:
-            st.markdown('<div style="color:#dc2626;font-size:.75rem;font-weight:600;">❌ Supabase未接続</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div style="color:#dc2626;font-size:.75rem;font-weight:600;">❌ Supabase未接続</div>',
+                unsafe_allow_html=True
+            )
 
 def to_df(rows):
     return pd.DataFrame(rows) if rows else pd.DataFrame()
