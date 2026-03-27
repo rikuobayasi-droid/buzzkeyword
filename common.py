@@ -105,6 +105,8 @@ def setup_sidebar():
         st.page_link("pages/11_finance_pl.py",      label="PL")
         st.markdown('<div style="font-size:.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#9ca3af;padding:.8rem .5rem .3rem;">競合分析</div>', unsafe_allow_html=True)
         st.page_link("pages/12_competitor_analysis.py", label="競合分析")
+        st.markdown('<div style="font-size:.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#9ca3af;padding:.8rem .5rem .3rem;">Patreon</div>', unsafe_allow_html=True)
+        st.page_link("pages/13_patreon_management.py",  label="Patreon管理")
         st.markdown("---")
         from db import get_client
         try:
