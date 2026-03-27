@@ -110,6 +110,14 @@ with c5:
     if st.button("PL\n\n損益計算書\n（準備中）\n\n→ /finance_pl", key="nav_pl"):
         st.switch_page("pages/11_finance_pl.py")
 
+# ── 競合分析 ──────────────────────────────────────────────────────────────────
+st.markdown('<div class="cat-label">競合分析</div>', unsafe_allow_html=True)
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    if st.button("競合分析\n\nInstagram競合アカウント管理\nフォロワー・閲覧数推移\n自動トレンド分析\n\n→ /competitor_analysis", key="nav_comp"):
+        st.switch_page("pages/12_competitor_analysis.py")
+
 st.markdown("""
 <div style="text-align:center;margin-top:2.5rem;padding-top:1.5rem;border-top:1px solid #e5e7eb;">
   <span style="font-size:.72rem;color:#d1d5db;letter-spacing:1px;">Tabibiyori Dashboard — Japan Content Operations</span>
