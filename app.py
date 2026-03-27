@@ -118,6 +118,10 @@ with c1:
     if st.button("競合分析\n\nInstagram競合アカウント管理\nフォロワー・閲覧数推移\n自動トレンド分析\n\n→ /competitor_analysis", key="nav_comp"):
         st.switch_page("pages/12_competitor_analysis.py")
 
+with c2:
+    if st.button("Patreon管理\n\nサブスク登録・解約管理\nMRR（月次売上）計算\nプランマスタ管理\n\n→ /patreon_management", key="nav_patreon"):
+        st.switch_page("pages/13_patreon_management.py")
+
 st.markdown("""
 <div style="text-align:center;margin-top:2.5rem;padding-top:1.5rem;border-top:1px solid #e5e7eb;">
   <span style="font-size:.72rem;color:#d1d5db;letter-spacing:1px;">Tabibiyori Dashboard — Japan Content Operations</span>
