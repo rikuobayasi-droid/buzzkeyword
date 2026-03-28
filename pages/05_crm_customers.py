@@ -177,13 +177,17 @@ def render_analysis():
     st.markdown('<div class="section-head">曜日別 × カテゴリー別</div>', unsafe_allow_html=True)
     df_wd = df_c_valid.dropna(subset=["weekday"]).copy()
     if not df_wd.empty:
-        # 修正3: pandas weekday(0=Mon) → 英語ラベル → Sun,Mon,...,Sat 順でソート
+        # 修正1: pd.Categorical で Sun,Mon,...,Sat 順を強制
         df_wd["weekday_en"] = df_wd["weekday"].astype(int).map(WEEKDAY_PD_TO_EN)
-        wd_cat = df_wd.groupby(["weekday_en","product_category"]).size().reset_index(name="count")
+        df_wd["weekday_en"] = pd.Categorical(
+            df_wd["weekday_en"],
+            categories=WEEKDAY_EN_ORDER,
+            ordered=True
+        )
+        wd_cat = df_wd.groupby(["weekday_en","product_category"], observed=False).size().reset_index(name="count")
         if not wd_cat.empty:
             pivot_wd = wd_cat.pivot(index="weekday_en", columns="product_category", values="count").fillna(0)
-            pivot_wd = pivot_wd.reindex(WEEKDAY_EN_ORDER)  # Sun,Mon,Tue,Wed,Thu,Fri,Sat 順
-            pivot_wd = pivot_wd.dropna(how="all")           # データのない曜日を除去
+            pivot_wd = pivot_wd.reindex(WEEKDAY_EN_ORDER).fillna(0)
             st.bar_chart(pivot_wd)
 
     # ── 修正4: プラットフォーム別分析（棒グラフ + テーブル）────────────────
@@ -193,16 +197,49 @@ def render_analysis():
         total_cnt  = int(plat_total["DM数"].sum())
         plat_total = plat_total.sort_values("DM数", ascending=False)
         plat_total["割合(%)"] = (plat_total["DM数"] / total_cnt * 100).round(1)
-
-        # 棒グラフ（多い順）
         st.bar_chart(plat_total.set_index("platform")["DM数"])
-
-        # テーブル（プラットフォーム・DM数・割合%）
         st.dataframe(
             plat_total.rename(columns={"platform":"プラットフォーム"}).reset_index(drop=True),
-            use_container_width=True,
-            hide_index=True
+            use_container_width=True, hide_index=True
         )
+
+    # ── 修正2: プラットフォーム × 商品カテゴリー クロス集計 ──────────────────
+    st.markdown('<div class="section-head">プラットフォーム × 商品カテゴリー（どのSNSから何が売れているか）</div>', unsafe_allow_html=True)
+    # purchases と patreon_subscriptions を統合
+    cross_rows = []
+    if not df_p.empty and not df_prods.empty:
+        df_p_cat = df_p.merge(
+            df_prods[["id","category"]].rename(columns={"id":"product_id"}),
+            on="product_id", how="left"
+        )
+        for _, row in df_p_cat.iterrows():
+            cid_val = row.get("customer_id")
+            if cid_val is None: continue
+            cust_match = df_c[df_c["id"] == cid_val]
+            if cust_match.empty: continue
+            plat = cust_match.iloc[0].get("platform","不明")
+            cat  = row.get("category","その他")
+            cross_rows.append({"platform": plat, "category": cat})
+    if not df_s.empty:
+        for _, row in df_s.iterrows():
+            cid_val = row.get("customer_id")
+            if cid_val is None: continue
+            cust_match = df_c[df_c["id"] == cid_val]
+            if cust_match.empty: continue
+            plat = cust_match.iloc[0].get("platform","不明")
+            cross_rows.append({"platform": plat, "category": "Patreon"})
+    if cross_rows:
+        df_cross = pd.DataFrame(cross_rows)
+        cross_pivot = df_cross.groupby(["platform","category"]).size().reset_index(name="購入数")
+        cross_table = cross_pivot.pivot(index="platform", columns="category", values="購入数").fillna(0).astype(int)
+        cross_table["合計"] = cross_table.sum(axis=1)
+        cross_table = cross_table.sort_values("合計", ascending=False)
+        # テーブル表示
+        st.dataframe(cross_table, use_container_width=True)
+        # 積み上げ棒グラフ
+        st.bar_chart(cross_table.drop(columns=["合計"]))
+    else:
+        st.caption("購入データが増えると表示されます")
 
     # ── 購入者ベース（修正1: buyer_ids に Patreon 含む）────────────────────
     st.markdown('<div class="section-head">購入者ベース分析（purchases + Patreon含む）</div>', unsafe_allow_html=True)
