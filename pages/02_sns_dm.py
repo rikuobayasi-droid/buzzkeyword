@@ -100,11 +100,21 @@ with tab_daily:
     )
 
     if st.button("保存する（上書き対応）", key="d_save"):
-        saved = 0
+        saved_new = 0; saved_upd = 0
         for pl, count in daily_vals.items():
+            # 既存チェック → 新規/更新を判別してメッセージを出し分け（修正3）
+            is_existing = get_daily_val(d_date, pl) > 0 or (
+                not existing_daily.empty and
+                len(existing_daily[(existing_daily["date"]==str(d_date)) & (existing_daily["platform"]==pl)]) > 0
+            )
             res = sb_upsert("dm_daily", {"date": str(d_date), "platform": pl, "count": count})
-            if res: saved += 1
-        st.markdown(f'<div class="success-box">保存しました（{saved}件）</div>', unsafe_allow_html=True)
+            if res:
+                if is_existing: saved_upd += 1
+                else:           saved_new += 1
+        msg_parts = []
+        if saved_new > 0: msg_parts.append(f"新規保存: {saved_new}件")
+        if saved_upd > 0: msg_parts.append(f"更新: {saved_upd}件")
+        st.markdown(f'<div class="success-box">{" / ".join(msg_parts)}</div>', unsafe_allow_html=True)
 
     # 直近30日間の入力済みデータ一覧
     st.markdown('<div class="section-head">入力済みデータ一覧（直近30日）</div>', unsafe_allow_html=True)
@@ -279,7 +289,6 @@ with tab_analysis:
     view_mode = st.radio("表示モード", ["月別", "年別"], horizontal=True)
 
     if view_mode == "月別":
-        # 利用可能な月の一覧を生成
         available_months = []
         if not existing_daily.empty:
             available_months = sorted(existing_daily["date"].str[:7].unique().tolist(), reverse=True)
@@ -296,56 +305,115 @@ with tab_analysis:
         sel_year  = st.selectbox("対象年を選択", available_years)
         sel_month = None
 
-    # ── 今月DM合計 ────────────────────────────────────────────────────────────
-    current_month = date.today().strftime("%Y-%m")
-    goal_val      = get_goal(current_month)
-    if not existing_daily.empty:
-        month_actual = int(existing_daily[
-            existing_daily["date"].str.startswith(current_month)
-        ]["count"].sum())
+    # ── 修正5・6: 選択月/年 に連動した目標・実績集計 ──────────────────────────
+    if view_mode == "月別" and sel_month:
+        sel_goal   = get_goal(sel_month)
+        if not existing_daily.empty:
+            # 修正6: 欠損日0補完後に合計
+            sel_actual = int(existing_daily[
+                existing_daily["date"].str.startswith(sel_month)
+            ]["count"].sum())
+        else:
+            sel_actual = 0
+        sel_progress = round(sel_actual / sel_goal * 100, 1) if sel_goal else 0
+        label_period = sel_month
     else:
-        month_actual = 0
-    progress = round(month_actual / goal_val * 100, 1) if goal_val else 0
+        # 年別: 各月目標の合計 / 各月実績の合計
+        rows_goals = sb_select("dm_goals", order="year_month")
+        df_goals   = to_df(rows_goals)
+        if sel_year and not df_goals.empty:
+            year_goals = df_goals[df_goals["year_month"].str.startswith(sel_year)]
+            sel_goal   = int(year_goals["goal"].sum()) if not year_goals.empty else DM_GOAL * 12
+        else:
+            sel_goal = DM_GOAL * 12
+        if not existing_daily.empty and sel_year:
+            sel_actual = int(existing_daily[
+                existing_daily["date"].str.startswith(sel_year)
+            ]["count"].sum())
+        else:
+            sel_actual = 0
+        sel_progress = round(sel_actual / sel_goal * 100, 1) if sel_goal else 0
+        label_period = sel_year or "全期間"
 
     st.markdown(f"""<div class="metric-row">
-      <div class="metric-card"><div class="val">{month_actual:,}</div><div class="lbl">今月合計DM</div></div>
-      <div class="metric-card"><div class="val">{goal_val:,}</div><div class="lbl">今月目標</div></div>
-      <div class="metric-card"><div class="val">{progress}%</div><div class="lbl">進捗率</div></div>
+      <div class="metric-card"><div class="val">{sel_actual:,}</div><div class="lbl">合計DM ({label_period})</div></div>
+      <div class="metric-card"><div class="val">{sel_goal:,}</div><div class="lbl">目標 ({label_period})</div></div>
+      <div class="metric-card"><div class="val">{sel_progress}%</div><div class="lbl">進捗率</div></div>
     </div>
     <div style="margin:.5rem 0 .2rem;font-size:.78rem;color:#6b7280;">
-      今月の進捗 {month_actual:,} / {goal_val:,}件
+      {label_period} 進捗: {sel_actual:,} / {sel_goal:,}件
     </div>
-    <div class="progress-wrap"><div class="progress-fill" style="width:{min(progress,100)}%"></div></div>
+    <div class="progress-wrap"><div class="progress-fill" style="width:{min(sel_progress,100)}%"></div></div>
     """, unsafe_allow_html=True)
 
-    # ── フィルタリング ─────────────────────────────────────────────────────────
+    # ── フィルタリング ────────────────────────────────────────────────────────
     if not existing_daily.empty:
         if view_mode == "月別" and sel_month:
-            df_filtered = existing_daily[existing_daily["date"].str.startswith(sel_month)]
+            df_filtered  = existing_daily[existing_daily["date"].str.startswith(sel_month)]
             period_label = sel_month
         elif view_mode == "年別" and sel_year:
-            df_filtered = existing_daily[existing_daily["date"].str.startswith(sel_year)]
+            df_filtered  = existing_daily[existing_daily["date"].str.startswith(sel_year)]
             period_label = sel_year
         else:
-            df_filtered = existing_daily.copy()
+            df_filtered  = existing_daily.copy()
             period_label = "全期間"
     else:
         df_filtered  = pd.DataFrame()
         period_label = ""
 
-    # ── 日別DM数推移 ──────────────────────────────────────────────────────────
-    if not df_filtered.empty:
-        st.markdown(f'<div class="section-head">日別DM数推移 — {period_label}</div>', unsafe_allow_html=True)
-        daily_total = df_filtered.groupby("date")["count"].sum().reset_index()
-        daily_total.columns = ["日付","合計DM"]
-        st.line_chart(daily_total.set_index("日付"))
+    # ── 修正4: 日付範囲を生成して欠損日を0補完 ───────────────────────────────
+    def fill_missing_dates(df_src: pd.DataFrame, period_str: str, mode: str) -> pd.DataFrame:
+        """
+        mode='monthly': YYYY-MM → その月の全日付を生成
+        mode='yearly' : YYYY   → その年の全日付を生成
+        欠損日を0で補完する（修正4）
+        """
+        if mode == "monthly":
+            try:
+                y, m    = int(period_str[:4]), int(period_str[5:7])
+                start   = date(y, m, 1)
+                from calendar import monthrange
+                end     = date(y, m, monthrange(y, m)[1])
+            except Exception:
+                return df_src
+        else:
+            try:
+                y       = int(period_str)
+                start   = date(y, 1, 1)
+                end     = date(y, 12, 31)
+            except Exception:
+                return df_src
+        all_dates = pd.date_range(start=start, end=end, freq="D")
+        all_dates_str = all_dates.strftime("%Y-%m-%d").tolist()
+        if df_src.empty:
+            return pd.DataFrame({"date": all_dates_str, "count": [0]*len(all_dates_str)})
+        daily_sum = df_src.groupby("date")["count"].sum().reset_index()
+        daily_sum = daily_sum.set_index("date").reindex(all_dates_str, fill_value=0).reset_index()
+        daily_sum.columns = ["date","count"]
+        return daily_sum
 
-        # 日別 × プラットフォーム
+    # ── 日別DM数推移（0補完済み）────────────────────────────────────────────
+    if not df_filtered.empty or period_label:
+        st.markdown(f'<div class="section-head">日別DM数推移 — {period_label}</div>', unsafe_allow_html=True)
+
+        fill_mode = "monthly" if view_mode == "月別" else "yearly"
+        fill_key  = sel_month if view_mode == "月別" else (sel_year or "")
+        df_filled = fill_missing_dates(df_filtered, fill_key, fill_mode)
+
+        if not df_filled.empty:
+            st.line_chart(df_filled.set_index("date")["count"])
+
+        # プラットフォーム別（修正4: 欠損日を0補完）
         st.markdown('<div class="section-head">プラットフォーム別 日別推移</div>', unsafe_allow_html=True)
-        d_pivot = df_filtered.groupby(["date","platform"])["count"].sum().reset_index()
-        d_wide  = d_pivot.pivot(index="date", columns="platform", values="count").fillna(0)
-        d_wide  = d_wide.loc[:, (d_wide != 0).any(axis=0)]
-        st.bar_chart(d_wide)
+        if not df_filtered.empty:
+            d_pivot = df_filtered.groupby(["date","platform"])["count"].sum().reset_index()
+            d_wide  = d_pivot.pivot(index="date", columns="platform", values="count").fillna(0)
+            if fill_key:
+                all_dates_str2 = df_filled["date"].tolist()
+                d_wide = d_wide.reindex(all_dates_str2, fill_value=0).fillna(0)
+            d_wide = d_wide.loc[:, (d_wide != 0).any(axis=0)]
+            if not d_wide.empty:
+                st.bar_chart(d_wide)
 
     # ── 国籍分析（時間帯別データ使用）────────────────────────────────────────
     if not existing_hourly.empty:
@@ -361,12 +429,13 @@ with tab_analysis:
             df_hf = df_hf[df_hf["year_month"].str.startswith(sel_year)]
 
         if not df_hf.empty:
+            # 修正4: 時間帯も0〜23時を全生成して補完
             hourly_agg = df_hf.groupby("hour")["count"].sum().reset_index()
-            hourly_agg.columns = ["時間（JST）", "DM数"]
+            hourly_agg = hourly_agg.set_index("hour").reindex(range(24), fill_value=0).reset_index()
+            hourly_agg.columns = ["時間（JST）","DM数"]
             st.bar_chart(hourly_agg.set_index("時間（JST）"))
 
-            # ゴールデンタイムTOP3と国籍推定
-            top3 = hourly_agg.nlargest(3, "DM数")
+            top3 = hourly_agg[hourly_agg["DM数"] > 0].nlargest(3, "DM数")
             for _, r in top3.iterrows():
                 h       = int(r["時間（JST）"])
                 nations = get_nationality(h)
@@ -377,36 +446,46 @@ with tab_analysis:
                     f'</div>'
                     f'<div style="font-size:.82rem;color:#374151;margin-top:.3rem;">'
                     f'推定国籍: {" / ".join(nations)}'
-                    f'</div></div>',
-                    unsafe_allow_html=True
-                )
+                    f'</div></div>', unsafe_allow_html=True)
 
-        # 時間帯ヒートマップ
+        # 時間帯ヒートマップ（0補完）
         st.markdown('<div class="section-head">時間帯ヒートマップ（月 × 時間帯）</div>', unsafe_allow_html=True)
-        df_hm      = existing_hourly if h_filter == "全体" else existing_hourly[existing_hourly["platform"] == h_filter]
+        df_hm = existing_hourly if h_filter == "全体" else existing_hourly[existing_hourly["platform"] == h_filter]
         if not df_hm.empty:
-            hmap       = df_hm.groupby(["year_month","hour"])["count"].sum().reset_index()
-            hmap_wide  = hmap.pivot(index="year_month", columns="hour", values="count").fillna(0).astype(int)
+            hmap      = df_hm.groupby(["year_month","hour"])["count"].sum().reset_index()
+            hmap_wide = hmap.pivot(index="year_month", columns="hour", values="count").fillna(0).astype(int)
+            # 修正4: 0〜23時を全列確保
+            hmap_wide = hmap_wide.reindex(columns=range(24), fill_value=0)
             hmap_wide.columns = [f"{h:02d}時" for h in hmap_wide.columns]
             st.dataframe(hmap_wide, use_container_width=True)
 
-    # ── 月別・年別集計 ─────────────────────────────────────────────────────────
+    # ── 修正5: 月別/年別集計（選択と連動）───────────────────────────────────
     if not existing_daily.empty:
-        if view_mode == "月別":
-            st.markdown('<div class="section-head">週別集計（選択月）</div>', unsafe_allow_html=True)
+        if view_mode == "月別" and sel_month:
+            st.markdown(f'<div class="section-head">週別集計 — {sel_month}</div>', unsafe_allow_html=True)
             if not df_filtered.empty:
-                df_filtered_copy = df_filtered.copy()
-                df_filtered_copy["date_dt"] = pd.to_datetime(df_filtered_copy["date"])
-                df_filtered_copy["week"]    = df_filtered_copy["date_dt"].dt.strftime("%Y-W%U")
-                week_total = df_filtered_copy.groupby("week")["count"].sum().reset_index()
+                df_wk = df_filtered.copy()
+                df_wk["date_dt"] = pd.to_datetime(df_wk["date"])
+                df_wk["week"]    = df_wk["date_dt"].dt.strftime("%Y-W%U")
+                week_total = df_wk.groupby("week")["count"].sum().reset_index()
                 week_total.columns = ["週","合計DM"]
                 st.bar_chart(week_total.set_index("週"))
         else:
-            st.markdown('<div class="section-head">月別集計（選択年）</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="section-head">月別集計 — {sel_year}</div>', unsafe_allow_html=True)
             if not df_filtered.empty:
-                df_filtered_copy = df_filtered.copy()
-                df_filtered_copy["month"] = df_filtered_copy["date"].str[:7]
-                month_plat = df_filtered_copy.groupby(["month","platform"])["count"].sum().reset_index()
-                m_wide     = month_plat.pivot(index="month", columns="platform", values="count").fillna(0)
-                m_wide     = m_wide.loc[:, (m_wide != 0).any(axis=0)]
-                st.bar_chart(m_wide)
+                df_mn = df_filtered.copy()
+                df_mn["month"] = df_mn["date"].str[:7]
+                # 修正4: 年内の全12ヶ月を生成して0補完
+                if sel_year:
+                    all_yr_months = [f"{sel_year}-{m:02d}" for m in range(1,13)]
+                    month_total   = df_mn.groupby("month")["count"].sum().reset_index()
+                    month_total   = month_total.set_index("month").reindex(all_yr_months, fill_value=0).reset_index()
+                    month_total.columns = ["月","合計DM"]
+                    st.bar_chart(month_total.set_index("月"))
+                    # プラットフォーム別月別
+                    m_plat = df_mn.groupby(["month","platform"])["count"].sum().reset_index()
+                    m_wide = m_plat.pivot(index="month", columns="platform", values="count").fillna(0)
+                    m_wide = m_wide.reindex(all_yr_months, fill_value=0).fillna(0)
+                    m_wide = m_wide.loc[:, (m_wide != 0).any(axis=0)]
+                    if not m_wide.empty:
+                        st.bar_chart(m_wide)
