@@ -66,7 +66,14 @@ with tab_daily:
     d_date = st.date_input("日付", value=date.today(), key="d_date")
 
     # 既存データを読み込んでデフォルト値に反映（編集機能）
+    # date列を YYYY-MM-DD 文字列に正規化（DBがtimestamp型で返す場合に対応）
     existing_daily = to_df(sb_select("dm_daily"))
+    if not existing_daily.empty:
+        existing_daily["date"] = pd.to_datetime(
+            existing_daily["date"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+        existing_daily = existing_daily.dropna(subset=["date"])
+
     def get_daily_val(dt, pl):
         if existing_daily.empty: return 0
         match = existing_daily[
@@ -242,8 +249,13 @@ with tab_goal:
     df_goals   = to_df(rows_goals)
 
     if not df_goals.empty:
-        # 日別データと結合して実績を計算
+        # 日別データを取得して date 列を正規化
         existing_daily = to_df(sb_select("dm_daily"))
+        if not existing_daily.empty:
+            existing_daily["date"] = pd.to_datetime(
+                existing_daily["date"], errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
+            existing_daily = existing_daily.dropna(subset=["date"])
         for _, row in df_goals.iterrows():
             ym   = row["year_month"]
             goal = int(row["goal"])
@@ -284,6 +296,17 @@ with tab_analysis:
     if existing_daily.empty and existing_hourly.empty:
         st.markdown('<div class="info-box">まだデータがありません</div>', unsafe_allow_html=True)
         st.stop()
+
+    # ── date列を必ず YYYY-MM-DD 文字列に正規化（DBがtimestamp型で返す場合に対応）──
+    # 例: "2026-02-22T00:00:00+00:00" → "2026-02-22"
+    #     "2026-02-22 00:00:00"       → "2026-02-22"
+    if not existing_daily.empty:
+        existing_daily = existing_daily.copy()
+        existing_daily["date"] = pd.to_datetime(
+            existing_daily["date"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+        # 変換失敗行（NaT）を除去
+        existing_daily = existing_daily.dropna(subset=["date"])
 
     # ── 表示切替（月別 / 年別）──────────────────────────────────────────────
     view_mode = st.radio("表示モード", ["月別", "年別"], horizontal=True)
