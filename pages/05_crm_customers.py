@@ -48,7 +48,12 @@ def time_pattern(peak_hour: int) -> str:
     elif 15 <= peak_hour <= 19:              return "夕方型（帰宅時間帯）"
     else:                                    return "深夜型"
 
-WEEKDAY_JP = ["月","火","水","木","金","土","日"]
+# 修正3: 曜日を英語・Sun始まりで定義
+# pandas の weekday: 0=Mon, 1=Tue, ..., 5=Sat, 6=Sun
+# 表示順: Sun, Mon, Tue, Wed, Thu, Fri, Sat
+WEEKDAY_EN_ORDER = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
+# pandas weekday(0=Mon) → 英語ラベル変換テーブル
+WEEKDAY_PD_TO_EN = {0:"Mon", 1:"Tue", 2:"Wed", 3:"Thu", 4:"Fri", 5:"Sat", 6:"Sun"}
 
 # ── 修正1: 購入済み顧客IDを両テーブルから取得 ─────────────────────────────────
 def get_buyer_ids() -> set:
@@ -172,20 +177,32 @@ def render_analysis():
     st.markdown('<div class="section-head">曜日別 × カテゴリー別</div>', unsafe_allow_html=True)
     df_wd = df_c_valid.dropna(subset=["weekday"]).copy()
     if not df_wd.empty:
-        df_wd["weekday_jp"] = df_wd["weekday"].astype(int).map(lambda x: WEEKDAY_JP[x])
-        wd_cat = df_wd.groupby(["weekday_jp","product_category"]).size().reset_index(name="count")
+        # 修正3: pandas weekday(0=Mon) → 英語ラベル → Sun,Mon,...,Sat 順でソート
+        df_wd["weekday_en"] = df_wd["weekday"].astype(int).map(WEEKDAY_PD_TO_EN)
+        wd_cat = df_wd.groupby(["weekday_en","product_category"]).size().reset_index(name="count")
         if not wd_cat.empty:
-            pivot_wd = wd_cat.pivot(index="weekday_jp",columns="product_category",values="count").fillna(0)
-            pivot_wd = pivot_wd.reindex(WEEKDAY_JP)
+            pivot_wd = wd_cat.pivot(index="weekday_en", columns="product_category", values="count").fillna(0)
+            pivot_wd = pivot_wd.reindex(WEEKDAY_EN_ORDER)  # Sun,Mon,Tue,Wed,Thu,Fri,Sat 順
+            pivot_wd = pivot_wd.dropna(how="all")           # データのない曜日を除去
             st.bar_chart(pivot_wd)
 
-    # ── プラットフォーム別 ────────────────────────────────────────────────────
-    st.markdown('<div class="section-head">プラットフォーム別 問い合わせ時間帯</div>', unsafe_allow_html=True)
-    plat_hour = df_c_valid.groupby(["platform","hour"]).size().reset_index(name="count")
-    if not plat_hour.empty:
-        pivot_ph = plat_hour.pivot(index="hour",columns="platform",values="count").fillna(0)
-        pivot_ph = pivot_ph.reindex(range(24), fill_value=0)
-        st.line_chart(pivot_ph)
+    # ── 修正4: プラットフォーム別分析（棒グラフ + テーブル）────────────────
+    st.markdown('<div class="section-head">プラットフォーム別 問い合わせ数（多い順）</div>', unsafe_allow_html=True)
+    plat_total = df_c_valid.groupby("platform").size().reset_index(name="DM数")
+    if not plat_total.empty:
+        total_cnt  = int(plat_total["DM数"].sum())
+        plat_total = plat_total.sort_values("DM数", ascending=False)
+        plat_total["割合(%)"] = (plat_total["DM数"] / total_cnt * 100).round(1)
+
+        # 棒グラフ（多い順）
+        st.bar_chart(plat_total.set_index("platform")["DM数"])
+
+        # テーブル（プラットフォーム・DM数・割合%）
+        st.dataframe(
+            plat_total.rename(columns={"platform":"プラットフォーム"}).reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True
+        )
 
     # ── 購入者ベース（修正1: buyer_ids に Patreon 含む）────────────────────
     st.markdown('<div class="section-head">購入者ベース分析（purchases + Patreon含む）</div>', unsafe_allow_html=True)
