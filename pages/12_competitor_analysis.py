@@ -265,7 +265,8 @@ with tab_monthly:
                     pass
 
         # 投稿記録から直近7投稿の平均 + 週間投稿数を自動計算して表示
-        auto_avg_likes = auto_avg_comments = auto_weekly_posts = 0
+        auto_avg_likes = auto_avg_comments = 0
+        auto_weekly_posts = 0.0
         if not df_posts.empty:
             acc_posts = df_posts[df_posts["account_id"] == acc_id].copy()
             if not acc_posts.empty:
@@ -278,23 +279,25 @@ with tab_monthly:
                 auto_avg_likes    = int(top7["likes"].mean())
                 auto_avg_comments = int(top7["comments"].mean())
 
-                # 週間投稿数 = 最新投稿日から7日以内の投稿数
+                # 週間投稿数 = 直近7投稿の期間から逆算
+                # 例: 直近7投稿が30日間 → 7 ÷ 30 × 7 = 1.6本/週
                 try:
-                    latest_post_date = date.fromisoformat(str(acc_posts_sorted.iloc[0]["post_date"])[:10])
-                    week_ago         = latest_post_date - timedelta(days=6)
-                    weekly_mask      = acc_posts["post_date"].apply(
-                        lambda x: date.fromisoformat(str(x)[:10]) >= week_ago
-                    )
-                    auto_weekly_posts = int(weekly_mask.sum())
+                    if len(top7) >= 2:
+                        newest = date.fromisoformat(str(top7.iloc[0]["post_date"])[:10])
+                        oldest = date.fromisoformat(str(top7.iloc[-1]["post_date"])[:10])
+                        span_days = max((newest - oldest).days, 1)
+                        auto_weekly_posts = round(len(top7) / span_days * 7, 1)
+                    elif len(top7) == 1:
+                        auto_weekly_posts = 7.0  # 1投稿しかなければ毎日投稿と仮定できないため週7換算
                 except Exception:
-                    auto_weekly_posts = 0
+                    auto_weekly_posts = 0.0
 
                 st.markdown(
                     f'<div class="info-box">'
                     f'直近{len(top7)}投稿より自動計算 &nbsp; '
                     f'平均いいね: <strong>{auto_avg_likes:,}</strong> &nbsp; '
                     f'平均コメント: <strong>{auto_avg_comments:,}</strong> &nbsp; '
-                    f'週間投稿数: <strong>{auto_weekly_posts}本</strong>'
+                    f'週間投稿数（推定）: <strong>{auto_weekly_posts}本/週</strong>'
                     f'</div>',
                     unsafe_allow_html=True
                 )
@@ -526,14 +529,18 @@ with tab_analysis:
         l        = int(latest.get("avg_likes",0))
         c        = int(latest.get("avg_comments",0))
         er       = calc_engagement_rate(f, l, c)
-        fw_man   = float(latest.get("followers_raw",0))
+        fw_man   = float(latest.get("followers_raw") or 0)
+        wp       = latest.get("weekly_posts", 0)
+        try:    wp_disp = f"{float(wp):.1f}"
+        except: wp_disp = "—"
         er_data.append({
-            "アカウント":     acc["username"],
-            "地域":          acc.get("content_region","") or "",
-            "フォロワー(万)": f"{fw_man:.1f}万" if fw_man > 0 else f"{f:,}",
-            "平均いいね":     l,
-            "平均コメント":   c,
+            "アカウント":          acc["username"],
+            "地域":               acc.get("content_region","") or "",
+            "フォロワー(万)":      f"{fw_man:.1f}万" if fw_man > 0 else f"{f:,}",
+            "平均いいね":          l,
+            "平均コメント":        c,
             "エンゲージメント率(%)": er,
+            "週間投稿数(推定)":    wp_disp,
         })
 
     if er_data:
@@ -550,19 +557,52 @@ with tab_analysis:
 
     if not df_single.empty:
         latest = df_single.iloc[-1]
-        fw_man = float(latest.get("followers_raw",0))
+        fw_man = float(latest.get("followers_raw") or 0)
         er     = calc_engagement_rate(
             int(latest.get("followers",0)),
             int(latest.get("avg_likes",0)),
             int(latest.get("avg_comments",0))
         )
+        # 週間投稿数は小数対応（1.6本/週 など）
+        wp_val = latest.get("weekly_posts", 0)
+        try:
+            wp_display = f"{float(wp_val):.1f}本/週"
+        except Exception:
+            wp_display = "—"
+
         st.markdown(f"""<div class="metric-row">
           <div class="metric-card"><div class="val">{fw_man:.1f}万</div><div class="lbl">フォロワー数</div></div>
           <div class="metric-card"><div class="val">{er}%</div><div class="lbl">エンゲージメント率</div></div>
-          <div class="metric-card"><div class="val">{int(latest.get('weekly_posts',0))}</div><div class="lbl">週間投稿数</div></div>
+          <div class="metric-card"><div class="val">{wp_display}</div><div class="lbl">週間投稿数（推定）</div></div>
+          <div class="metric-card"><div class="val">{int(latest.get('avg_likes',0)):,}</div><div class="lbl">平均いいね</div></div>
+          <div class="metric-card"><div class="val">{int(latest.get('avg_comments',0)):,}</div><div class="lbl">平均コメント</div></div>
         </div>""", unsafe_allow_html=True)
 
-        st.line_chart(df_single.set_index("recorded_date")["followers"])
+        # フォロワー数推移
+        st.markdown('<div class="section-head">フォロワー数推移</div>', unsafe_allow_html=True)
+        if "followers_raw" in df_single.columns:
+            df_single["フォロワー(万)"] = pd.to_numeric(df_single["followers_raw"], errors="coerce").fillna(0)
+            st.line_chart(df_single.set_index("recorded_date")["フォロワー(万)"])
+        else:
+            st.line_chart(df_single.set_index("recorded_date")["followers"])
+
+        # エンゲージメント率推移
+        if len(df_single) >= 2:
+            st.markdown('<div class="section-head">エンゲージメント率推移</div>', unsafe_allow_html=True)
+            df_single["ER(%)"] = df_single.apply(
+                lambda r: calc_engagement_rate(
+                    int(r.get("followers",0)),
+                    int(r.get("avg_likes",0)),
+                    int(r.get("avg_comments",0))
+                ), axis=1
+            )
+            st.line_chart(df_single.set_index("recorded_date")["ER(%)"])
+
+        # 週間投稿数推移
+        if "weekly_posts" in df_single.columns and len(df_single) >= 2:
+            st.markdown('<div class="section-head">週間投稿数推移（推定）</div>', unsafe_allow_html=True)
+            df_single["weekly_posts_f"] = pd.to_numeric(df_single["weekly_posts"], errors="coerce").fillna(0)
+            st.bar_chart(df_single.set_index("recorded_date")["weekly_posts_f"])
 
     # ── 直近投稿分析 ─────────────────────────────────────────────────────
     if not df_posts.empty:
