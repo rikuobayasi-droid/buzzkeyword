@@ -63,7 +63,7 @@ with c1:
         st.switch_page("pages/01_sns_trend.py")
 
 with c2:
-    if st.button("DM\n\n日別・時間帯別DM集計\nゴールデンタイム分析\n月間目標進捗\n\n→ /sns_dm", key="nav_dm"):
+    if st.button("DM\n\nSpreadsheetから自動集計\nゴールデンタイム分析\n月間目標進捗\n\n→ /sns_dm", key="nav_dm"):
         st.switch_page("pages/02_sns_dm.py")
 
 with c3:
