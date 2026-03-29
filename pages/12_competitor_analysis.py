@@ -326,7 +326,7 @@ with tab_monthly:
                     "avg_views":     0,
                     "avg_likes":     auto_avg_likes,     # 投稿記録から自動計算
                     "avg_comments":  auto_avg_comments,  # 投稿記録から自動計算
-                    "weekly_posts":  auto_weekly_posts,  # 投稿記録から自動計算
+                    "weekly_posts":  float(auto_weekly_posts),  # 小数対応（DBはNUMERIC型）
                     "note":          monthly_note or None,
                 })
                 if res:
