@@ -11,7 +11,7 @@ URL: /competitor_analysis
 """
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, timedelta
 from common import inject_css, setup_sidebar, to_df
 from db import sb_select, sb_insert, sb_upsert, sb_update, sb_delete
 
@@ -212,82 +212,158 @@ with tab_manage:
                         st.rerun()
 
 # ════════════════════════════════════════════════════════
-# タブ2: 月次データ入力
+# ════════════════════════════════════════════════════════
+# タブ2: 月次データ入力（フォロワー数のみ・月1回）
 # ════════════════════════════════════════════════════════
 with tab_monthly:
-    st.markdown('<div class="section-head">月次データを入力（月1回）</div>', unsafe_allow_html=True)
-    st.caption("フォロワー数はXX.X万人形式で入力してください。例: 12.3万人 → 12.3")
+    st.markdown('<div class="section-head">フォロワー数を登録（月1回）</div>', unsafe_allow_html=True)
+    st.caption("平均いいね・コメントは「投稿記録」タブの直近7投稿から自動計算されます")
 
-    rows_acc = sb_select("competitor_accounts", order="username")
-    df_acc   = to_df(rows_acc)
+    rows_acc  = sb_select("competitor_accounts", order="username")
+    rows_hist = sb_select("competitor_history",  order="-recorded_date")
+    rows_posts = sb_select("competitor_posts",   order="-post_date")
+    df_acc    = to_df(rows_acc)
+    df_hist   = to_df(rows_hist)
+    df_posts  = to_df(rows_posts)
 
     if df_acc.empty:
         st.markdown('<div class="info-box">先にアカウント管理タブでアカウントを登録してください</div>', unsafe_allow_html=True)
     else:
+        # アカウントを選択して次回入力予定日を表示
+        sel_acc = st.selectbox("アカウントを選択", df_acc["username"].tolist(), key="monthly_sel")
+        acc_id  = int(df_acc[df_acc["username"] == sel_acc]["id"].values[0])
+
+        # 最新の記録日から次回入力予定日を計算
+        if not df_hist.empty:
+            acc_hist = df_hist[df_hist["account_id"] == acc_id].copy()
+            if not acc_hist.empty:
+                latest_date_str = acc_hist["recorded_date"].max()
+                try:
+                    latest_date  = date.fromisoformat(str(latest_date_str)[:10])
+                    # 次回入力予定日 = 最新記録日 + 1ヶ月
+                    if latest_date.month == 12:
+                        next_date = latest_date.replace(year=latest_date.year+1, month=1)
+                    else:
+                        next_date = latest_date.replace(month=latest_date.month+1)
+                    days_left = (next_date - date.today()).days
+                    if days_left > 0:
+                        st.markdown(
+                            f'<div class="info-box">'
+                            f'前回記録日: <strong>{latest_date}</strong> &nbsp; '
+                            f'次回入力予定: <strong>{next_date}</strong>（あと{days_left}日）'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            f'<div class="success-box">'
+                            f'次回入力日（{next_date}）になりました。フォロワー数を登録してください。'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                except Exception:
+                    pass
+
+        # 投稿記録から直近7投稿の平均 + 週間投稿数を自動計算して表示
+        auto_avg_likes = auto_avg_comments = auto_weekly_posts = 0
+        if not df_posts.empty:
+            acc_posts = df_posts[df_posts["account_id"] == acc_id].copy()
+            if not acc_posts.empty:
+                acc_posts["likes"]    = pd.to_numeric(acc_posts["likes"],    errors="coerce").fillna(0)
+                acc_posts["comments"] = pd.to_numeric(acc_posts["comments"], errors="coerce").fillna(0)
+                acc_posts_sorted = acc_posts.sort_values("post_date", ascending=False)
+
+                # 直近7投稿の平均いいね・コメント
+                top7 = acc_posts_sorted.head(7)
+                auto_avg_likes    = int(top7["likes"].mean())
+                auto_avg_comments = int(top7["comments"].mean())
+
+                # 週間投稿数 = 最新投稿日から7日以内の投稿数
+                try:
+                    latest_post_date = date.fromisoformat(str(acc_posts_sorted.iloc[0]["post_date"])[:10])
+                    week_ago         = latest_post_date - timedelta(days=6)
+                    weekly_mask      = acc_posts["post_date"].apply(
+                        lambda x: date.fromisoformat(str(x)[:10]) >= week_ago
+                    )
+                    auto_weekly_posts = int(weekly_mask.sum())
+                except Exception:
+                    auto_weekly_posts = 0
+
+                st.markdown(
+                    f'<div class="info-box">'
+                    f'直近{len(top7)}投稿より自動計算 &nbsp; '
+                    f'平均いいね: <strong>{auto_avg_likes:,}</strong> &nbsp; '
+                    f'平均コメント: <strong>{auto_avg_comments:,}</strong> &nbsp; '
+                    f'週間投稿数: <strong>{auto_weekly_posts}本</strong>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+        # フォロワー数のみ入力（週間投稿数・いいね・コメントはすべて自動計算）
         with st.form(key="monthly_form"):
             mc1, mc2 = st.columns(2)
             with mc1:
-                sel_acc  = st.selectbox("アカウントを選択", df_acc["username"].tolist())
-                rec_date = st.date_input("記録日", value=date.today())
-                followers_man  = st.number_input("フォロワー数（万人）", min_value=0.0, value=0.0, step=0.1, format="%.1f",
-                                                  help="例: 12.3万人なら 12.3 と入力")
+                rec_date      = st.date_input("記録日", value=date.today())
+                followers_man = st.number_input(
+                    "フォロワー数（万人）",
+                    min_value=0.0, value=0.0, step=0.1, format="%.1f",
+                    help="例: 12.3万人なら 12.3 と入力"
+                )
             with mc2:
-                avg_likes    = st.number_input("直近7投稿 平均いいね数",    min_value=0, value=0, step=10)
-                avg_comments = st.number_input("直近7投稿 平均コメント数",  min_value=0, value=0, step=1)
-                weekly_posts = st.number_input("週間投稿数",                 min_value=0, value=0, step=1)
-            monthly_note = st.text_input("メモ（任意）")
+                monthly_note = st.text_input("メモ（任意）")
 
             if st.form_submit_button("保存する"):
-                acc_id     = int(df_acc[df_acc["username"] == sel_acc]["id"].values[0])
-                followers  = man_to_int(followers_man)
-                er         = calc_engagement_rate(followers, avg_likes, avg_comments)
+                followers = man_to_int(followers_man)
+                er = calc_engagement_rate(followers, auto_avg_likes, auto_avg_comments)
                 res = sb_upsert("competitor_history", {
                     "account_id":    acc_id,
                     "recorded_date": str(rec_date),
                     "followers":     followers,
                     "followers_raw": followers_man,
                     "avg_views":     0,
-                    "avg_likes":     avg_likes,
-                    "avg_comments":  avg_comments,
-                    "weekly_posts":  weekly_posts,
+                    "avg_likes":     auto_avg_likes,     # 投稿記録から自動計算
+                    "avg_comments":  auto_avg_comments,  # 投稿記録から自動計算
+                    "weekly_posts":  auto_weekly_posts,  # 投稿記録から自動計算
                     "note":          monthly_note or None,
                 })
                 if res:
                     st.markdown(
                         f'<div class="success-box">保存しました &nbsp; '
-                        f'エンゲージメント率: <strong>{er}%</strong></div>',
+                        f'エンゲージメント率: <strong>{er}%</strong>（自動計算）</div>',
                         unsafe_allow_html=True
                     )
                 else:
                     st.markdown('<div class="err-box">保存に失敗しました</div>', unsafe_allow_html=True)
 
         # 入力済み履歴
-        st.markdown('<div class="section-head">入力済み履歴</div>', unsafe_allow_html=True)
-        rows_hist = sb_select("competitor_history", order="-recorded_date")
-        df_hist   = to_df(rows_hist)
-        if not df_hist.empty and not df_acc.empty:
-            df_hist = df_hist.merge(
-                df_acc[["id","username"]].rename(columns={"id":"account_id"}),
-                on="account_id", how="left"
-            )
-            f_acc = st.selectbox("絞り込み", ["全体"] + df_acc["username"].tolist(), key="hist_filter")
-            df_show = df_hist if f_acc == "全体" else df_hist[df_hist["username"] == f_acc]
-            for col in ["followers","avg_likes","avg_comments","weekly_posts"]:
-                if col in df_show.columns:
-                    df_show[col] = pd.to_numeric(df_show[col], errors="coerce").fillna(0).astype(int)
-            if "followers_raw" in df_show.columns:
-                df_show["フォロワー(万)"] = df_show["followers_raw"].apply(
-                    lambda x: f"{float(x):.1f}万" if x else ""
+        st.markdown('<div class="section-head">フォロワー数の入力履歴</div>', unsafe_allow_html=True)
+        if not df_hist.empty:
+            df_hist_show = df_hist[df_hist["account_id"] == acc_id].copy()
+            if not df_hist_show.empty:
+                for col in ["followers","avg_likes","avg_comments","weekly_posts"]:
+                    if col in df_hist_show.columns:
+                        df_hist_show[col] = pd.to_numeric(df_hist_show[col], errors="coerce").fillna(0).astype(int)
+                if "followers_raw" in df_hist_show.columns:
+                    df_hist_show["フォロワー(万)"] = df_hist_show["followers_raw"].apply(
+                        lambda x: f"{float(x):.1f}万" if x else ""
+                    )
+                df_hist_show["ER(%)"] = df_hist_show.apply(
+                    lambda r: calc_engagement_rate(
+                        int(r.get("followers",0)),
+                        int(r.get("avg_likes",0)),
+                        int(r.get("avg_comments",0))
+                    ), axis=1
                 )
-            cols_show = ["username","recorded_date","フォロワー(万)","avg_likes","avg_comments","weekly_posts"]
-            cols_show = [c for c in cols_show if c in df_show.columns]
-            st.dataframe(
-                df_show[cols_show].rename(columns={
-                    "username":"アカウント","recorded_date":"記録日",
-                    "avg_likes":"平均いいね","avg_comments":"平均コメント","weekly_posts":"週投稿数"
-                }).head(20),
-                use_container_width=True, hide_index=True
-            )
+                st.dataframe(
+                    df_hist_show[["recorded_date","フォロワー(万)","avg_likes","avg_comments","ER(%)","weekly_posts"]]\
+                        .rename(columns={
+                            "recorded_date":"記録日","avg_likes":"平均いいね",
+                            "avg_comments":"平均コメント","weekly_posts":"週投稿数"
+                        }).sort_values("記録日", ascending=False),
+                    use_container_width=True, hide_index=True
+                )
+            else:
+                st.markdown('<div class="info-box">このアカウントの記録がありません</div>', unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════
 # タブ3: 投稿記録（直近7投稿）
