@@ -18,18 +18,46 @@ def get_client():
     return _client
 
 def sb_select(table, filters=None, order=None, limit=None):
+    """
+    Supabaseのデフォルト上限は1000件。
+    limit未指定の場合は全件取得する（ページネーション）。
+    """
     import streamlit as st
     try:
-        q = get_client().table(table).select("*")
-        if filters:
-            for col, val in filters.items():
-                q = q.eq(col, val)
-        if order:
-            desc = order.startswith("-")
-            q = q.order(order.lstrip("-"), desc=desc)
+        client = get_client()
+
+        # limit指定あり → そのまま取得
         if limit:
+            q = client.table(table).select("*")
+            if filters:
+                for col, val in filters.items():
+                    q = q.eq(col, val)
+            if order:
+                desc = order.startswith("-")
+                q = q.order(order.lstrip("-"), desc=desc)
             q = q.limit(limit)
-        return q.execute().data or []
+            return q.execute().data or []
+
+        # limit未指定 → 1000件ずつページネーションで全件取得
+        all_data = []
+        page_size = 1000
+        offset = 0
+        while True:
+            q = client.table(table).select("*")
+            if filters:
+                for col, val in filters.items():
+                    q = q.eq(col, val)
+            if order:
+                desc = order.startswith("-")
+                q = q.order(order.lstrip("-"), desc=desc)
+            q = q.range(offset, offset + page_size - 1)
+            rows = q.execute().data or []
+            all_data.extend(rows)
+            if len(rows) < page_size:
+                break  # 最後のページ
+            offset += page_size
+        return all_data
+
     except Exception as e:
         st.error(f"DB取得エラー({table}): {e}")
         return []
