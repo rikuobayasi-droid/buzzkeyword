@@ -1,13 +1,10 @@
 """
-pages/12_competitor_analysis.py — 競合分析（v2完全版）
-URL: /competitor_analysis
+pages/12_competitor_analysis.py — 競合分析（v3完全版）
 
-機能:
-- 競合アカウント登録・編集・削除
-- 月次データ（フォロワー数・エンゲージメント・投稿頻度）
-- 直近7投稿の記録（URL・投稿日・いいね・コメント）
-- 地域別トレンド分析
-- 市場戦略レポート（自動生成）
+構成:
+  一覧画面: 検索・比較表 → アカウントをクリックで詳細へ
+  詳細画面: 基本情報タブ / 月次データタブ
+  分析画面: 全体・地域別・アカウント比較
 """
 import streamlit as st
 import pandas as pd
@@ -18,387 +15,302 @@ from db import sb_select, sb_insert, sb_upsert, sb_update, sb_delete
 st.set_page_config(page_title="競合分析 | Tabibiyori", page_icon=None, layout="wide")
 inject_css()
 setup_sidebar()
-st.markdown('<div class="page-title">競合分析</div>', unsafe_allow_html=True)
 
-# 地域・ジャンルの選択肢
-REGIONS = ["東京","大阪","京都","沖縄","北海道","福岡","名古屋","広島","神戸","奈良","その他"]
-GENRES  = ["観光・旅行","グルメ","文化・伝統","自然・景色","ホテル・宿","体験・アクティビティ","その他"]
+# ── 定数 ─────────────────────────────────────────────────────────────────────
+LOCATIONS  = ["東京","大阪","京都","沖縄","北海道","福岡","名古屋","広島","神戸","奈良","海外","その他"]
+CATEGORIES = ["観光・旅行","グルメ","文化・伝統","自然・景色","ホテル・宿","体験・アクティビティ","ライフスタイル","その他"]
 
-tab_manage, tab_monthly, tab_posts, tab_analysis = st.tabs([
-    "アカウント管理",
-    "月次データ入力",
-    "投稿記録",
-    "分析・市場戦略",
-])
+# ── ヘルパー関数 ──────────────────────────────────────────────────────────────
+def man_to_int(val: float) -> int:
+    return int(val * 10000)
 
-# ── ヘルパー: 万人単位 → 整数変換 ────────────────────────────────────────────
-def man_to_int(val_man: float) -> int:
-    """12.3万 → 123000"""
-    return int(val_man * 10000)
+def int_to_man(val) -> float:
+    try:    return round(int(val) / 10000, 1)
+    except: return 0.0
 
-def int_to_man(val_int) -> float:
-    """123000 → 12.3"""
+def calc_er(followers: int, likes: int, comments: int) -> float:
+    if followers <= 0: return 0.0
+    return round((likes + comments) / followers * 100, 2)
+
+def calc_growth(old_f: int, new_f: int) -> float:
+    if old_f <= 0: return 0.0
+    return round((new_f - old_f) / old_f * 100, 1)
+
+def calc_weekly_posts(df_posts_sorted: pd.DataFrame) -> float:
+    """直近7投稿の期間から週間投稿数を推定"""
+    top7 = df_posts_sorted.head(7)
+    if len(top7) < 2: return float(len(top7))
     try:
-        return round(int(val_int) / 10000, 1)
+        newest = date.fromisoformat(str(top7.iloc[0]["post_date"])[:10])
+        oldest = date.fromisoformat(str(top7.iloc[-1]["post_date"])[:10])
+        span   = max((newest - oldest).days, 1)
+        return round(len(top7) / span * 7, 1)
     except Exception:
         return 0.0
 
-# ── 分析ロジック ──────────────────────────────────────────────────────────────
-def calc_engagement_rate(followers: int, avg_likes: int, avg_comments: int) -> float:
-    """エンゲージメント率 = (いいね+コメント) ÷ フォロワー × 100"""
-    if followers <= 0: return 0.0
-    return round((avg_likes + avg_comments) / followers * 100, 2)
+def get_latest_metrics(acc_id: int, df_hist: pd.DataFrame, df_posts: pd.DataFrame) -> dict:
+    """アカウントの最新メトリクスを一括取得"""
+    result = {"followers": 0, "followers_raw": 0.0, "avg_likes": 0,
+              "avg_comments": 0, "weekly_posts": 0.0, "er": 0.0, "growth": None}
+    if not df_hist.empty:
+        ah = df_hist[df_hist["account_id"] == acc_id].sort_values("recorded_date")
+        if not ah.empty:
+            latest = ah.iloc[-1]
+            f   = int(latest.get("followers",0) or 0)
+            l   = int(latest.get("avg_likes",0) or 0)
+            c   = int(latest.get("avg_comments",0) or 0)
+            fw  = float(latest.get("followers_raw",0) or 0)
+            result.update({"followers": f, "followers_raw": fw,
+                           "avg_likes": l, "avg_comments": c, "er": calc_er(f,l,c)})
+            if len(ah) >= 2:
+                result["growth"] = calc_growth(int(ah.iloc[0]["followers"] or 0), f)
+    if not df_posts.empty:
+        ap = df_posts[df_posts["account_id"] == acc_id].sort_values("post_date", ascending=False)
+        if not ap.empty:
+            ap["likes"]    = pd.to_numeric(ap["likes"],    errors="coerce").fillna(0)
+            ap["comments"] = pd.to_numeric(ap["comments"], errors="coerce").fillna(0)
+            top7 = ap.head(7)
+            result["avg_likes"]    = int(top7["likes"].mean())
+            result["avg_comments"] = int(top7["comments"].mean())
+            result["weekly_posts"] = calc_weekly_posts(ap)
+            f = result["followers"]
+            result["er"] = calc_er(f, result["avg_likes"], result["avg_comments"])
+    return result
 
-def calc_growth_rate(old_followers: int, new_followers: int) -> float:
-    """フォロワー増加率（%）"""
-    if old_followers <= 0: return 0.0
-    return round((new_followers - old_followers) / old_followers * 100, 1)
-
-def analyze_market(df_acc: pd.DataFrame, df_hist: pd.DataFrame) -> list:
-    """
-    全競合データから市場戦略レポートをルールベースで自動生成。
-    返値: [{level, message}]
-    """
-    reports = []
-    if df_acc.empty or df_hist.empty:
-        return reports
-
-    # 地域別フォロワー増加率を集計
-    region_growth = {}
-    for _, acc in df_acc.iterrows():
-        acc_id  = acc["id"]
-        region  = acc.get("content_region","") or acc.get("region","") or "不明"
-        acc_hist = df_hist[df_hist["account_id"] == acc_id].sort_values("recorded_date")
-        if len(acc_hist) < 2: continue
-        old_f = int(acc_hist.iloc[0]["followers"] or 0)
-        new_f = int(acc_hist.iloc[-1]["followers"] or 0)
-        rate  = calc_growth_rate(old_f, new_f)
-        if region not in region_growth:
-            region_growth[region] = []
-        region_growth[region].append(rate)
-
-    if region_growth:
-        region_avg = {r: round(sum(v)/len(v), 1) for r, v in region_growth.items()}
-        best_region  = max(region_avg, key=region_avg.get)
-        worst_region = min(region_avg, key=region_avg.get)
-        best_rate    = region_avg[best_region]
-        worst_rate   = region_avg[worst_region]
-
-        if best_rate > 5:
-            reports.append({"level":"ok","message":
-                f"【地域トレンド】{best_region}系コンテンツの平均フォロワー増加率が+{best_rate}%で最も高い。"
-                f"{best_region}へのコンテンツシフトを推奨します。"})
-        elif best_rate < 1:
-            reports.append({"level":"warning","message":
-                "【市場飽和】全地域でフォロワー増加率が低迷しています。"
-                "現在の市場は飽和状態の可能性があります。新しい切り口や地域の検討を推奨します。"})
-
-        if worst_rate < 0:
-            reports.append({"level":"warning","message":
-                f"【衰退シグナル】{worst_region}系コンテンツの成長率が{worst_rate}%と最も低い。"
-                f"{worst_region}コンテンツの縮小を検討してください。"})
-
-    # 全体のエンゲージメント率
-    latest_rows = []
-    for _, acc in df_acc.iterrows():
-        acc_id   = acc["id"]
-        acc_hist = df_hist[df_hist["account_id"] == acc_id].sort_values("recorded_date")
-        if acc_hist.empty: continue
-        latest = acc_hist.iloc[-1]
-        f  = int(latest.get("followers") or 0)
-        l  = int(latest.get("avg_likes") or 0)
-        c  = int(latest.get("avg_comments") or 0)
-        er = calc_engagement_rate(f, l, c)
-        latest_rows.append({"account": acc["username"], "engagement": er, "followers": f})
-
-    if latest_rows:
-        df_latest = pd.DataFrame(latest_rows)
-        avg_er    = df_latest["engagement"].mean()
-        if avg_er > 3:
-            reports.append({"level":"ok","message":
-                f"【エンゲージメント】競合全体の平均エンゲージメント率は{avg_er:.1f}%と高水準です。"
-                "コンテンツの質を高めることが差別化の鍵です。"})
-        elif avg_er < 1:
-            reports.append({"level":"warning","message":
-                f"【エンゲージメント低下】競合全体の平均エンゲージメント率は{avg_er:.1f}%と低い。"
-                "市場全体でユーザーの関心が低下している可能性があります。"})
-
-    return reports
+@st.cache_data(ttl=120)
+def load_all_data():
+    return (
+        to_df(sb_select("competitor_accounts", order="username")),
+        to_df(sb_select("competitor_history",  order="recorded_date")),
+        to_df(sb_select("competitor_posts",    order="-post_date")),
+    )
 
 # ════════════════════════════════════════════════════════
-# タブ1: アカウント管理
+# メインルーティング
 # ════════════════════════════════════════════════════════
-with tab_manage:
-    st.markdown('<div class="section-head">競合アカウントを登録</div>', unsafe_allow_html=True)
+sel_id = st.session_state.get("selected_competitor_id")
 
-    with st.form(key="register_form"):
-        rc1, rc2 = st.columns(2)
-        with rc1:
-            new_username       = st.text_input("Instagramユーザー名 *", placeholder="例: @tokyo_travel")
-            new_content_region = st.selectbox("主な発信地域", ["未設定"] + REGIONS, key="reg_cr")
-            new_region         = st.text_input("拠点（任意）", placeholder="例: 東京都在住")
-        with rc2:
-            new_content_genre = st.selectbox("コンテンツジャンル", ["未設定"] + GENRES, key="reg_cg")
-            new_genre         = st.text_input("詳細ジャンル（任意）", placeholder="例: 京都グルメ特化")
-            new_note          = st.text_area("メモ", height=68)
+if sel_id:
+    # ── 詳細ページ ────────────────────────────────────────────────────────────
+    df_acc, df_hist, df_posts = load_all_data()
+    if df_acc.empty or sel_id not in df_acc["id"].values:
+        st.session_state.pop("selected_competitor_id", None); st.rerun()
 
-        if st.form_submit_button("アカウントを登録する"):
-            if not new_username.strip():
-                st.markdown('<div class="err-box">ユーザー名は必須です</div>', unsafe_allow_html=True)
-            else:
-                res = sb_insert("competitor_accounts", {
-                    "username":       new_username.strip(),
-                    "platform":       "Instagram",
-                    "content_region": new_content_region if new_content_region != "未設定" else None,
-                    "region":         new_region.strip() or None,
-                    "content_genre":  new_content_genre if new_content_genre != "未設定" else None,
-                    "genre":          new_genre.strip() or None,
-                    "note":           new_note.strip() or None,
-                    "is_active":      True,
-                })
-                if res:
-                    st.markdown('<div class="success-box">登録しました</div>', unsafe_allow_html=True)
-                    st.rerun()
-                else:
-                    st.markdown('<div class="err-box">登録に失敗しました（同じユーザー名が既に存在する可能性があります）</div>', unsafe_allow_html=True)
+    row = df_acc[df_acc["id"] == sel_id].iloc[0]
+    cid = int(row["id"])
 
-    # 一覧・編集・削除
-    st.markdown('<div class="section-head">登録済みアカウント一覧</div>', unsafe_allow_html=True)
-    rows_acc = sb_select("competitor_accounts", order="username")
-    df_acc   = to_df(rows_acc)
+    col_back, col_title = st.columns([1,6])
+    with col_back:
+        if st.button("← 一覧に戻る", key="back"):
+            st.session_state.pop("selected_competitor_id", None)
+            st.cache_data.clear()
+            st.rerun()
+    with col_title:
+        st.markdown(f'<div class="page-title">{row["username"]}</div>', unsafe_allow_html=True)
 
-    if df_acc.empty:
-        st.markdown('<div class="info-box">まだ登録されていません</div>', unsafe_allow_html=True)
-    else:
-        for _, row in df_acc.iterrows():
-            rid    = int(row["id"])
+    tab_info, tab_monthly, tab_posts_tab = st.tabs(["基本情報", "月次データ", "投稿記録"])
+
+    # ── タブ1: 基本情報 ───────────────────────────────────────────────────────
+    with tab_info:
+        m = get_latest_metrics(cid, df_hist, df_posts)
+        loc = row.get("location","") or row.get("content_region","") or ""
+        cat = row.get("category","") or row.get("content_genre","") or ""
+
+        # メトリクスカード
+        growth_str = f"{m['growth']:+.1f}%" if m["growth"] is not None else "—"
+        growth_col = "#15803d" if (m["growth"] or 0) >= 0 else "#dc2626"
+        st.markdown(f"""<div class="metric-row">
+          <div class="metric-card"><div class="val">{m['followers_raw']:.1f}万</div><div class="lbl">フォロワー数</div></div>
+          <div class="metric-card"><div class="val" style="color:{growth_col};">{growth_str}</div><div class="lbl">フォロワー増加率</div></div>
+          <div class="metric-card"><div class="val">{m['er']}%</div><div class="lbl">エンゲージメント率</div></div>
+          <div class="metric-card"><div class="val">{m['avg_likes']:,}</div><div class="lbl">平均いいね</div></div>
+          <div class="metric-card"><div class="val">{m['avg_comments']:,}</div><div class="lbl">平均コメント</div></div>
+          <div class="metric-card"><div class="val">{m['weekly_posts']:.1f}本/週</div><div class="lbl">投稿頻度（推定）</div></div>
+        </div>""", unsafe_allow_html=True)
+
+        st.markdown('<div class="section-head">アカウント情報を編集</div>', unsafe_allow_html=True)
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            e_uname = st.text_input("ユーザー名", value=row.get("username",""), key=f"e_uname_{cid}")
+            loc_idx = (["未設定"]+LOCATIONS).index(loc) if loc in LOCATIONS else 0
+            e_loc   = st.selectbox("発信地", ["未設定"]+LOCATIONS, index=loc_idx, key=f"e_loc_{cid}")
+            e_region= st.text_input("拠点詳細（任意）", value=row.get("region","") or "", key=f"e_region_{cid}")
+        with ec2:
+            cat_idx = (["未設定"]+CATEGORIES).index(cat) if cat in CATEGORIES else 0
+            e_cat   = st.selectbox("カテゴリー", ["未設定"]+CATEGORIES, index=cat_idx, key=f"e_cat_{cid}")
+            e_genre = st.text_input("詳細ジャンル（任意）", value=row.get("genre","") or "", key=f"e_genre_{cid}")
+            e_note  = st.text_area("メモ", value=row.get("note","") or "", height=80, key=f"e_note_{cid}")
+
+        bc1, bc2, bc3 = st.columns([2,2,2])
+        with bc1:
+            if st.button("更新する", key=f"upd_{cid}"):
+                sb_update("competitor_accounts", {
+                    "username": e_uname.strip(),
+                    "location": e_loc if e_loc != "未設定" else None,
+                    "content_region": e_loc if e_loc != "未設定" else None,
+                    "region":   e_region.strip() or None,
+                    "category": e_cat if e_cat != "未設定" else None,
+                    "content_genre": e_cat if e_cat != "未設定" else None,
+                    "genre":    e_genre.strip() or None,
+                    "note":     e_note.strip() or None,
+                }, {"id": cid})
+                st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
+                st.cache_data.clear(); st.rerun()
+        with bc2:
             active = bool(row.get("is_active", True))
-            cr     = row.get("content_region","") or ""
-            cg     = row.get("content_genre","")  or ""
+            if st.button("無効化" if active else "有効化", key=f"toggle_{cid}"):
+                sb_update("competitor_accounts", {"is_active": not active}, {"id": cid})
+                st.cache_data.clear(); st.rerun()
+        with bc3:
+            if st.button("削除する", key=f"del_{cid}"):
+                sb_delete("competitor_accounts", {"id": cid})
+                st.session_state.pop("selected_competitor_id", None)
+                st.cache_data.clear(); st.rerun()
 
-            with st.expander(f"{'🟢' if active else '⚫'} {row['username']} | {cr} | {cg}"):
-                ec1, ec2 = st.columns(2)
-                with ec1:
-                    e_uname = st.text_input("ユーザー名",    value=row.get("username",""),         key=f"e_uname_{rid}")
-                    cr_idx  = (["未設定"]+REGIONS).index(cr) if cr in REGIONS else 0
-                    e_cr    = st.selectbox("主な発信地域", ["未設定"]+REGIONS, index=cr_idx,         key=f"e_cr_{rid}")
-                    e_region= st.text_input("拠点（任意）", value=row.get("region","") or "",       key=f"e_region_{rid}")
-                with ec2:
-                    cg_idx  = (["未設定"]+GENRES).index(cg) if cg in GENRES else 0
-                    e_cg    = st.selectbox("コンテンツジャンル", ["未設定"]+GENRES, index=cg_idx,   key=f"e_cg_{rid}")
-                    e_genre = st.text_input("詳細ジャンル",  value=row.get("genre","") or "",       key=f"e_genre_{rid}")
-                    e_note  = st.text_area("メモ",           value=row.get("note","") or "", height=68, key=f"e_note_{rid}")
+    # ── タブ2: 月次データ ─────────────────────────────────────────────────────
+    with tab_monthly:
+        st.markdown('<div class="section-head">月次データを入力（月1回）</div>', unsafe_allow_html=True)
+        st.caption("フォロワー数はXX.X万人形式で入力。平均いいね・コメント・投稿頻度は投稿記録から自動計算されます。")
 
-                bc1, bc2, bc3 = st.columns([2,2,2])
-                with bc1:
-                    if st.button("更新する", key=f"upd_{rid}"):
-                        sb_update("competitor_accounts", {
-                            "username":       e_uname.strip(),
-                            "content_region": e_cr if e_cr != "未設定" else None,
-                            "region":         e_region.strip() or None,
-                            "content_genre":  e_cg if e_cg != "未設定" else None,
-                            "genre":          e_genre.strip() or None,
-                            "note":           e_note.strip() or None,
-                        }, {"id": rid})
-                        st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
-                        st.rerun()
-                with bc2:
-                    if st.button("無効化する" if active else "有効化する", key=f"toggle_{rid}"):
-                        sb_update("competitor_accounts", {"is_active": not active}, {"id": rid})
-                        st.rerun()
-                with bc3:
-                    if st.button("削除する", key=f"del_{rid}"):
-                        sb_delete("competitor_accounts", {"id": rid})
-                        st.rerun()
-
-# ════════════════════════════════════════════════════════
-# ════════════════════════════════════════════════════════
-# タブ2: 月次データ入力（フォロワー数のみ・月1回）
-# ════════════════════════════════════════════════════════
-with tab_monthly:
-    st.markdown('<div class="section-head">フォロワー数を登録（月1回）</div>', unsafe_allow_html=True)
-    st.caption("平均いいね・コメントは「投稿記録」タブの直近7投稿から自動計算されます")
-
-    rows_acc  = sb_select("competitor_accounts", order="username")
-    rows_hist = sb_select("competitor_history",  order="-recorded_date")
-    rows_posts = sb_select("competitor_posts",   order="-post_date")
-    df_acc    = to_df(rows_acc)
-    df_hist   = to_df(rows_hist)
-    df_posts  = to_df(rows_posts)
-
-    if df_acc.empty:
-        st.markdown('<div class="info-box">先にアカウント管理タブでアカウントを登録してください</div>', unsafe_allow_html=True)
-    else:
-        # アカウントを選択して次回入力予定日を表示
-        sel_acc = st.selectbox("アカウントを選択", df_acc["username"].tolist(), key="monthly_sel")
-        acc_id  = int(df_acc[df_acc["username"] == sel_acc]["id"].values[0])
-
-        # 最新の記録日から次回入力予定日を計算
+        # 次回入力予定日を表示
         if not df_hist.empty:
-            acc_hist = df_hist[df_hist["account_id"] == acc_id].copy()
-            if not acc_hist.empty:
-                latest_date_str = acc_hist["recorded_date"].max()
+            ah = df_hist[df_hist["account_id"] == cid].sort_values("recorded_date")
+            if not ah.empty:
                 try:
-                    latest_date  = date.fromisoformat(str(latest_date_str)[:10])
-                    # 次回入力予定日 = 最新記録日 + 1ヶ月
-                    if latest_date.month == 12:
-                        next_date = latest_date.replace(year=latest_date.year+1, month=1)
-                    else:
-                        next_date = latest_date.replace(month=latest_date.month+1)
-                    days_left = (next_date - date.today()).days
-                    if days_left > 0:
-                        st.markdown(
-                            f'<div class="info-box">'
-                            f'前回記録日: <strong>{latest_date}</strong> &nbsp; '
-                            f'次回入力予定: <strong>{next_date}</strong>（あと{days_left}日）'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.markdown(
-                            f'<div class="success-box">'
-                            f'次回入力日（{next_date}）になりました。フォロワー数を登録してください。'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
+                    last_d   = date.fromisoformat(str(ah.iloc[-1]["recorded_date"])[:10])
+                    next_m   = last_d.replace(month=last_d.month % 12 + 1,
+                                              year=last_d.year + (1 if last_d.month == 12 else 0))
+                    days_left = (next_m - date.today()).days
+                    color     = "#15803d" if days_left <= 0 else "#1e3a5f"
+                    msg       = f"次回入力予定: <strong>{next_m}</strong>" + (
+                        f" &nbsp; ✅ 入力日になりました" if days_left <= 0
+                        else f" &nbsp; （あと{days_left}日）"
+                    )
+                    st.markdown(f'<div class="info-box" style="border-color:{color};">{msg}</div>', unsafe_allow_html=True)
                 except Exception:
                     pass
 
-        # 投稿記録から直近7投稿の平均 + 週間投稿数を自動計算して表示
-        auto_avg_likes = auto_avg_comments = 0
-        auto_weekly_posts = 0.0
+        # 投稿記録から自動計算
+        auto_likes = auto_comments = 0
+        auto_wp    = 0.0
         if not df_posts.empty:
-            acc_posts = df_posts[df_posts["account_id"] == acc_id].copy()
-            if not acc_posts.empty:
-                acc_posts["likes"]    = pd.to_numeric(acc_posts["likes"],    errors="coerce").fillna(0)
-                acc_posts["comments"] = pd.to_numeric(acc_posts["comments"], errors="coerce").fillna(0)
-                acc_posts_sorted = acc_posts.sort_values("post_date", ascending=False)
-
-                # 直近7投稿の平均いいね・コメント
-                top7 = acc_posts_sorted.head(7)
-                auto_avg_likes    = int(top7["likes"].mean())
-                auto_avg_comments = int(top7["comments"].mean())
-
-                # 週間投稿数 = 直近7投稿の期間から逆算
-                # 例: 直近7投稿が30日間 → 7 ÷ 30 × 7 = 1.6本/週
-                try:
-                    if len(top7) >= 2:
-                        newest = date.fromisoformat(str(top7.iloc[0]["post_date"])[:10])
-                        oldest = date.fromisoformat(str(top7.iloc[-1]["post_date"])[:10])
-                        span_days = max((newest - oldest).days, 1)
-                        auto_weekly_posts = round(len(top7) / span_days * 7, 1)
-                    elif len(top7) == 1:
-                        auto_weekly_posts = 7.0  # 1投稿しかなければ毎日投稿と仮定できないため週7換算
-                except Exception:
-                    auto_weekly_posts = 0.0
-
+            ap = df_posts[df_posts["account_id"] == cid].sort_values("post_date", ascending=False).copy()
+            if not ap.empty:
+                ap["likes"]    = pd.to_numeric(ap["likes"],    errors="coerce").fillna(0)
+                ap["comments"] = pd.to_numeric(ap["comments"], errors="coerce").fillna(0)
+                top7        = ap.head(7)
+                auto_likes    = int(top7["likes"].mean())
+                auto_comments = int(top7["comments"].mean())
+                auto_wp       = calc_weekly_posts(ap)
                 st.markdown(
-                    f'<div class="info-box">'
-                    f'直近{len(top7)}投稿より自動計算 &nbsp; '
-                    f'平均いいね: <strong>{auto_avg_likes:,}</strong> &nbsp; '
-                    f'平均コメント: <strong>{auto_avg_comments:,}</strong> &nbsp; '
-                    f'週間投稿数（推定）: <strong>{auto_weekly_posts}本/週</strong>'
-                    f'</div>',
+                    f'<div class="info-box">直近{len(top7)}投稿より自動計算 &nbsp; '
+                    f'平均いいね: <strong>{auto_likes:,}</strong> &nbsp; '
+                    f'平均コメント: <strong>{auto_comments:,}</strong> &nbsp; '
+                    f'投稿頻度: <strong>{auto_wp:.1f}本/週</strong></div>',
                     unsafe_allow_html=True
                 )
 
-        # フォロワー数のみ入力（週間投稿数・いいね・コメントはすべて自動計算）
-        with st.form(key="monthly_form"):
+        with st.form(key=f"monthly_form_{cid}"):
             mc1, mc2 = st.columns(2)
             with mc1:
-                rec_date      = st.date_input("記録日", value=date.today())
-                followers_man = st.number_input(
-                    "フォロワー数（万人）",
-                    min_value=0.0, value=0.0, step=0.1, format="%.1f",
-                    help="例: 12.3万人なら 12.3 と入力"
-                )
+                rec_ym        = st.text_input("年月 (YYYY-MM)", value=date.today().strftime("%Y-%m"),
+                                              placeholder="例: 2026-03", key=f"m_ym_{cid}")
+                followers_man = st.number_input("フォロワー数（万人）",
+                                                min_value=0.0, value=0.0, step=0.1, format="%.1f",
+                                                key=f"m_fw_{cid}")
             with mc2:
-                monthly_note = st.text_input("メモ（任意）")
+                latest_post = st.text_area("直近投稿内容（任意）",
+                                           placeholder="例: 大阪城の夕景リール",
+                                           height=80, key=f"m_lp_{cid}")
+                m_note = st.text_input("メモ（任意）", key=f"m_note_{cid}")
 
             if st.form_submit_button("保存する"):
-                followers = man_to_int(followers_man)
-                er = calc_engagement_rate(followers, auto_avg_likes, auto_avg_comments)
-                res = sb_upsert("competitor_history", {
-                    "account_id":    acc_id,
-                    "recorded_date": str(rec_date),
-                    "followers":     followers,
-                    "followers_raw": followers_man,
-                    "avg_views":     0,
-                    "avg_likes":     auto_avg_likes,     # 投稿記録から自動計算
-                    "avg_comments":  auto_avg_comments,  # 投稿記録から自動計算
-                    "weekly_posts":  float(auto_weekly_posts),  # 小数対応（DBはNUMERIC型）
-                    "note":          monthly_note or None,
-                })
-                if res:
-                    st.markdown(
-                        f'<div class="success-box">保存しました &nbsp; '
-                        f'エンゲージメント率: <strong>{er}%</strong>（自動計算）</div>',
-                        unsafe_allow_html=True
-                    )
+                if not rec_ym or len(rec_ym) != 7:
+                    st.markdown('<div class="err-box">年月をYYYY-MM形式で入力してください</div>', unsafe_allow_html=True)
                 else:
-                    st.markdown('<div class="err-box">保存に失敗しました</div>', unsafe_allow_html=True)
+                    followers  = man_to_int(followers_man)
+                    engagement = auto_likes + auto_comments
+                    er_val     = calc_er(followers, auto_likes, auto_comments)
+                    rec_date   = f"{rec_ym}-01"
+                    res = sb_upsert("competitor_history", {
+                        "account_id":    cid,
+                        "recorded_date": rec_date,
+                        "year_month":    rec_ym,
+                        "followers":     followers,
+                        "followers_raw": followers_man,
+                        "avg_views":     0,
+                        "avg_likes":     auto_likes,
+                        "avg_comments":  auto_comments,
+                        "weekly_posts":  float(auto_wp),
+                        "engagement":    engagement,
+                        "latest_post":   latest_post.strip() or None,
+                        "note":          m_note.strip() or None,
+                    })
+                    if res:
+                        st.markdown(
+                            f'<div class="success-box">保存しました &nbsp; '
+                            f'ER: <strong>{er_val}%</strong> &nbsp; '
+                            f'エンゲージメント: <strong>{engagement:,}</strong></div>',
+                            unsafe_allow_html=True
+                        )
+                        st.cache_data.clear()
+                    else:
+                        st.markdown('<div class="err-box">保存に失敗しました</div>', unsafe_allow_html=True)
 
-        # 入力済み履歴
-        st.markdown('<div class="section-head">フォロワー数の入力履歴</div>', unsafe_allow_html=True)
+        # 月次データ履歴
+        st.markdown('<div class="section-head">月次データ履歴</div>', unsafe_allow_html=True)
         if not df_hist.empty:
-            df_hist_show = df_hist[df_hist["account_id"] == acc_id].copy()
-            if not df_hist_show.empty:
-                for col in ["followers","avg_likes","avg_comments","weekly_posts"]:
-                    if col in df_hist_show.columns:
-                        df_hist_show[col] = pd.to_numeric(df_hist_show[col], errors="coerce").fillna(0).astype(int)
-                if "followers_raw" in df_hist_show.columns:
-                    df_hist_show["フォロワー(万)"] = df_hist_show["followers_raw"].apply(
+            ah = df_hist[df_hist["account_id"] == cid].copy().sort_values("recorded_date", ascending=False)
+            if not ah.empty:
+                for col in ["followers","avg_likes","avg_comments","engagement"]:
+                    if col in ah.columns:
+                        ah[col] = pd.to_numeric(ah[col], errors="coerce").fillna(0).astype(int)
+                if "followers_raw" in ah.columns:
+                    ah["フォロワー(万)"] = ah["followers_raw"].apply(
                         lambda x: f"{float(x):.1f}万" if x else ""
                     )
-                df_hist_show["ER(%)"] = df_hist_show.apply(
-                    lambda r: calc_engagement_rate(
-                        int(r.get("followers",0)),
-                        int(r.get("avg_likes",0)),
-                        int(r.get("avg_comments",0))
-                    ), axis=1
+                ah["ER(%)"] = ah.apply(lambda r: calc_er(
+                    int(r.get("followers",0)), int(r.get("avg_likes",0)), int(r.get("avg_comments",0))
+                ), axis=1)
+                ah["投稿頻度"] = ah["weekly_posts"].apply(
+                    lambda x: f"{float(x):.1f}本/週" if x else ""
                 )
+                show_cols = ["year_month","フォロワー(万)","avg_likes","avg_comments","ER(%)","投稿頻度","latest_post"]
+                show_cols = [c for c in show_cols if c in ah.columns]
                 st.dataframe(
-                    df_hist_show[["recorded_date","フォロワー(万)","avg_likes","avg_comments","ER(%)","weekly_posts"]]\
-                        .rename(columns={
-                            "recorded_date":"記録日","avg_likes":"平均いいね",
-                            "avg_comments":"平均コメント","weekly_posts":"週投稿数"
-                        }).sort_values("記録日", ascending=False),
+                    ah[show_cols].rename(columns={
+                        "year_month":"年月","avg_likes":"平均いいね",
+                        "avg_comments":"平均コメント","latest_post":"直近投稿"
+                    }),
                     use_container_width=True, hide_index=True
                 )
-            else:
-                st.markdown('<div class="info-box">このアカウントの記録がありません</div>', unsafe_allow_html=True)
 
-# ════════════════════════════════════════════════════════
-# タブ3: 投稿記録（直近7投稿）
-# ════════════════════════════════════════════════════════
-with tab_posts:
-    st.markdown('<div class="section-head">直近投稿を記録</div>', unsafe_allow_html=True)
-    st.caption("直近7投稿程度を記録してください。同じURLで再入力すると上書きされます。")
+                # フォロワー推移グラフ
+                if len(ah) >= 2:
+                    st.markdown('<div class="section-head">フォロワー推移</div>', unsafe_allow_html=True)
+                    chart_df = ah.sort_values("recorded_date")[["recorded_date","followers_raw"]].copy()
+                    chart_df["followers_raw"] = pd.to_numeric(chart_df["followers_raw"], errors="coerce").fillna(0)
+                    st.line_chart(chart_df.set_index("recorded_date")["followers_raw"])
 
-    rows_acc = sb_select("competitor_accounts", order="username")
-    df_acc   = to_df(rows_acc)
-
-    if df_acc.empty:
-        st.markdown('<div class="info-box">先にアカウント管理タブでアカウントを登録してください</div>', unsafe_allow_html=True)
-    else:
-        with st.form(key="post_form"):
+    # ── タブ3: 投稿記録 ────────────────────────────────────────────────────────
+    with tab_posts_tab:
+        st.markdown('<div class="section-head">投稿を記録</div>', unsafe_allow_html=True)
+        with st.form(key=f"post_form_{cid}"):
             pc1, pc2 = st.columns(2)
             with pc1:
-                p_acc      = st.selectbox("アカウントを選択", df_acc["username"].tolist(), key="p_acc")
-                p_url      = st.text_input("投稿URL *", placeholder="https://www.instagram.com/p/...")
-                p_date     = st.date_input("投稿日", value=date.today())
+                p_url  = st.text_input("投稿URL *", placeholder="https://www.instagram.com/p/...")
+                p_date = st.date_input("投稿日", value=date.today())
             with pc2:
-                p_likes    = st.number_input("いいね数",    min_value=0, value=0, step=10)
-                p_comments = st.number_input("コメント数",  min_value=0, value=0, step=1)
+                p_likes    = st.number_input("いいね数",   min_value=0, value=0, step=10)
+                p_comments = st.number_input("コメント数", min_value=0, value=0, step=1)
                 p_note     = st.text_input("メモ（任意）")
 
-            if st.form_submit_button("投稿を記録する"):
+            if st.form_submit_button("記録する"):
                 if not p_url.strip():
-                    st.markdown('<div class="err-box">投稿URLは必須です</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="err-box">URLは必須です</div>', unsafe_allow_html=True)
                 else:
-                    acc_id = int(df_acc[df_acc["username"] == p_acc]["id"].values[0])
                     res = sb_upsert("competitor_posts", {
-                        "account_id":    acc_id,
+                        "account_id":    cid,
                         "post_url":      p_url.strip(),
                         "post_date":     str(p_date),
                         "likes":         p_likes,
@@ -408,214 +320,280 @@ with tab_posts:
                     })
                     if res:
                         st.markdown('<div class="success-box">記録しました</div>', unsafe_allow_html=True)
+                        st.cache_data.clear()
                     else:
                         st.markdown('<div class="err-box">記録に失敗しました</div>', unsafe_allow_html=True)
 
-        # 記録済み投稿一覧
-        st.markdown('<div class="section-head">記録済み投稿一覧</div>', unsafe_allow_html=True)
-        rows_posts = sb_select("competitor_posts", order="-post_date")
-        df_posts   = to_df(rows_posts)
+        # 投稿一覧
+        st.markdown('<div class="section-head">投稿一覧</div>', unsafe_allow_html=True)
+        if not df_posts.empty:
+            ap = df_posts[df_posts["account_id"] == cid].sort_values("post_date", ascending=False).copy()
+            if not ap.empty:
+                for col in ["likes","comments"]:
+                    ap[col] = pd.to_numeric(ap[col], errors="coerce").fillna(0).astype(int)
+                ap["エンゲージメント"] = ap["likes"] + ap["comments"]
+                for _, pr in ap.iterrows():
+                    pid = int(pr["id"])
+                    with st.expander(
+                        f"{pr['post_date']} | ❤️ {int(pr['likes']):,} 💬 {int(pr['comments']):,} | {str(pr['post_url'])[:40]}..."
+                    ):
+                        st.markdown(f"**URL:** [{pr['post_url']}]({pr['post_url']})")
+                        ec1, ec2, ec3, ec4 = st.columns(4)
+                        with ec1:
+                            new_l = st.number_input("いいね", value=int(pr["likes"]), step=10, key=f"pl_{pid}")
+                        with ec2:
+                            new_c = st.number_input("コメント", value=int(pr["comments"]), step=1, key=f"pc_{pid}")
+                        with ec3:
+                            if st.button("更新", key=f"pu_{pid}"):
+                                sb_update("competitor_posts", {"likes": new_l, "comments": new_c}, {"id": pid})
+                                st.cache_data.clear(); st.rerun()
+                        with ec4:
+                            if st.button("削除", key=f"pd_{pid}"):
+                                sb_delete("competitor_posts", {"id": pid})
+                                st.cache_data.clear(); st.rerun()
 
-        if not df_posts.empty and not df_acc.empty:
-            df_posts = df_posts.merge(
-                df_acc[["id","username"]].rename(columns={"id":"account_id"}),
-                on="account_id", how="left"
-            )
-            pf_acc = st.selectbox("アカウントで絞り込み", ["全体"] + df_acc["username"].tolist(), key="post_filter")
-            df_ps  = df_posts if pf_acc == "全体" else df_posts[df_posts["username"] == pf_acc]
+else:
+    # ════════════════════════════════════════════════════════
+    # 一覧・分析画面
+    # ════════════════════════════════════════════════════════
+    st.markdown('<div class="page-title">競合分析</div>', unsafe_allow_html=True)
+    tab_list, tab_register, tab_analysis = st.tabs(["アカウント一覧", "新規登録", "分析・市場戦略"])
 
-            for _, row in df_ps.head(30).iterrows():
-                pid = int(row["id"])
-                with st.expander(
-                    f"{row.get('username','')} | {row.get('post_date','')} | "
-                    f"❤️ {int(row.get('likes',0)):,} 💬 {int(row.get('comments',0)):,}"
-                ):
-                    st.markdown(f"**URL:** [{row.get('post_url','')}]({row.get('post_url','')})")
-                    st.markdown(f"**投稿日:** {row.get('post_date','')} &nbsp; **記録日:** {row.get('recorded_date','')}")
-                    st.markdown(f"**いいね:** {int(row.get('likes',0)):,} &nbsp; **コメント:** {int(row.get('comments',0)):,}")
-                    if row.get("note"):
-                        st.markdown(f"**メモ:** {row.get('note','')}")
+    df_acc, df_hist, df_posts = load_all_data()
 
-                    # 編集
-                    ec1, ec2, ec3, ec4 = st.columns(4)
-                    with ec1:
-                        new_likes = st.number_input("いいね数", value=int(row.get("likes",0)), step=10, key=f"pl_{pid}")
-                    with ec2:
-                        new_comments = st.number_input("コメント数", value=int(row.get("comments",0)), step=1, key=f"pc_{pid}")
-                    with ec3:
-                        if st.button("更新", key=f"pu_{pid}"):
-                            sb_update("competitor_posts", {"likes": new_likes, "comments": new_comments}, {"id": pid})
-                            st.rerun()
-                    with ec4:
-                        if st.button("削除", key=f"pd_{pid}"):
-                            sb_delete("competitor_posts", {"id": pid})
-                            st.rerun()
+    # ── タブ1: アカウント一覧（検索・比較表）─────────────────────────────────
+    with tab_list:
+        st.markdown('<div class="section-head">検索・絞り込み</div>', unsafe_allow_html=True)
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        with sc1: s_name = st.text_input("アカウント名", key="s_name")
+        with sc2: s_loc  = st.selectbox("発信地", ["すべて"]+LOCATIONS, key="s_loc")
+        with sc3: s_cat  = st.selectbox("カテゴリー", ["すべて"]+CATEGORIES, key="s_cat")
+        with sc4: s_date = st.text_input("登録日 (YYYY-MM-DD)", placeholder="例: 2026-01-01", key="s_date")
 
-# ════════════════════════════════════════════════════════
-# タブ4: 分析・市場戦略
-# ════════════════════════════════════════════════════════
-with tab_analysis:
-    rows_acc   = sb_select("competitor_accounts", order="username")
-    rows_hist  = sb_select("competitor_history",  order="recorded_date")
-    rows_posts = sb_select("competitor_posts",     order="-post_date")
-    df_acc     = to_df(rows_acc)
-    df_hist    = to_df(rows_hist)
-    df_posts   = to_df(rows_posts)
-
-    if df_acc.empty:
-        st.markdown('<div class="info-box">競合アカウントが登録されていません</div>', unsafe_allow_html=True)
-        st.stop()
-
-    if df_hist.empty:
-        st.markdown('<div class="info-box">月次データがありません。「月次データ入力」タブからデータを入力してください</div>', unsafe_allow_html=True)
-        st.stop()
-
-    # 数値型変換
-    for col in ["followers","avg_likes","avg_comments","weekly_posts","followers_raw"]:
-        if col in df_hist.columns:
-            df_hist[col] = pd.to_numeric(df_hist[col], errors="coerce").fillna(0)
-
-    # アカウント名結合
-    df_hist = df_hist.merge(
-        df_acc[["id","username","content_region","content_genre"]].rename(columns={"id":"account_id"}),
-        on="account_id", how="left"
-    )
-
-    # ── 市場戦略レポート（自動生成）────────────────────────────────────────
-    st.markdown('<div class="section-head">市場戦略レポート（自動生成）</div>', unsafe_allow_html=True)
-    reports = analyze_market(df_acc, df_hist)
-    if reports:
-        for r in reports:
-            if r["level"] == "ok":
-                st.markdown(f'<div class="success-box">✅ {r["message"]}</div>', unsafe_allow_html=True)
-            elif r["level"] == "warning":
-                st.markdown(f'<div class="err-box">⚠️ {r["message"]}</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="info-box">{r["message"]}</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="info-box">複数のアカウントのデータが2件以上になると自動レポートが生成されます</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── 地域別フォロワー増加率 ────────────────────────────────────────────
-    st.markdown('<div class="section-head">地域別 フォロワー増加率</div>', unsafe_allow_html=True)
-    region_data = []
-    for _, acc in df_acc.iterrows():
-        acc_id  = int(acc["id"])
-        region  = acc.get("content_region","") or "不明"
-        ah = df_hist[df_hist["account_id"] == acc_id].sort_values("recorded_date")
-        if len(ah) < 2: continue
-        old_f = int(ah.iloc[0]["followers"])
-        new_f = int(ah.iloc[-1]["followers"])
-        rate  = calc_growth_rate(old_f, new_f)
-        region_data.append({"地域": region, "アカウント": acc["username"], "増加率(%)": rate, "最新フォロワー": new_f})
-
-    if region_data:
-        df_region = pd.DataFrame(region_data)
-        region_avg = df_region.groupby("地域")["増加率(%)"].mean().round(1).sort_values(ascending=False).reset_index()
-        region_avg.columns = ["地域","平均増加率(%)"]
-        st.dataframe(region_avg, use_container_width=True, hide_index=True)
-        st.bar_chart(region_avg.set_index("地域")["平均増加率(%)"])
-
-    # ── エンゲージメント率比較 ────────────────────────────────────────────
-    st.markdown('<div class="section-head">エンゲージメント率比較</div>', unsafe_allow_html=True)
-    er_data = []
-    for _, acc in df_acc.iterrows():
-        acc_id = int(acc["id"])
-        ah = df_hist[df_hist["account_id"] == acc_id].sort_values("recorded_date")
-        if ah.empty: continue
-        latest   = ah.iloc[-1]
-        f        = int(latest.get("followers",0))
-        l        = int(latest.get("avg_likes",0))
-        c        = int(latest.get("avg_comments",0))
-        er       = calc_engagement_rate(f, l, c)
-        fw_man   = float(latest.get("followers_raw") or 0)
-        wp       = latest.get("weekly_posts", 0)
-        try:    wp_disp = f"{float(wp):.1f}"
-        except: wp_disp = "—"
-        er_data.append({
-            "アカウント":          acc["username"],
-            "地域":               acc.get("content_region","") or "",
-            "フォロワー(万)":      f"{fw_man:.1f}万" if fw_man > 0 else f"{f:,}",
-            "平均いいね":          l,
-            "平均コメント":        c,
-            "エンゲージメント率(%)": er,
-            "週間投稿数(推定)":    wp_disp,
-        })
-
-    if er_data:
-        df_er = pd.DataFrame(er_data).sort_values("エンゲージメント率(%)", ascending=False)
-        st.dataframe(df_er, use_container_width=True, hide_index=True)
-        st.bar_chart(df_er.set_index("アカウント")["エンゲージメント率(%)"])
-
-    # ── フォロワー数推移（個別）──────────────────────────────────────────
-    st.markdown('<div class="section-head">フォロワー数推移（アカウント別）</div>', unsafe_allow_html=True)
-    sel_acc_a = st.selectbox("アカウントを選択", df_acc["username"].tolist(), key="anal_sel")
-    acc_row   = df_acc[df_acc["username"] == sel_acc_a].iloc[0]
-    acc_id    = int(acc_row["id"])
-    df_single = df_hist[df_hist["account_id"] == acc_id].sort_values("recorded_date")
-
-    if not df_single.empty:
-        latest = df_single.iloc[-1]
-        fw_man = float(latest.get("followers_raw") or 0)
-        er     = calc_engagement_rate(
-            int(latest.get("followers",0)),
-            int(latest.get("avg_likes",0)),
-            int(latest.get("avg_comments",0))
-        )
-        # 週間投稿数は小数対応（1.6本/週 など）
-        wp_val = latest.get("weekly_posts", 0)
-        try:
-            wp_display = f"{float(wp_val):.1f}本/週"
-        except Exception:
-            wp_display = "—"
-
-        st.markdown(f"""<div class="metric-row">
-          <div class="metric-card"><div class="val">{fw_man:.1f}万</div><div class="lbl">フォロワー数</div></div>
-          <div class="metric-card"><div class="val">{er}%</div><div class="lbl">エンゲージメント率</div></div>
-          <div class="metric-card"><div class="val">{wp_display}</div><div class="lbl">週間投稿数（推定）</div></div>
-          <div class="metric-card"><div class="val">{int(latest.get('avg_likes',0)):,}</div><div class="lbl">平均いいね</div></div>
-          <div class="metric-card"><div class="val">{int(latest.get('avg_comments',0)):,}</div><div class="lbl">平均コメント</div></div>
-        </div>""", unsafe_allow_html=True)
-
-        # フォロワー数推移
-        st.markdown('<div class="section-head">フォロワー数推移</div>', unsafe_allow_html=True)
-        if "followers_raw" in df_single.columns:
-            df_single["フォロワー(万)"] = pd.to_numeric(df_single["followers_raw"], errors="coerce").fillna(0)
-            st.line_chart(df_single.set_index("recorded_date")["フォロワー(万)"])
+        if df_acc.empty:
+            st.markdown('<div class="info-box">まだ登録されていません。「新規登録」タブからアカウントを追加してください。</div>', unsafe_allow_html=True)
         else:
-            st.line_chart(df_single.set_index("recorded_date")["followers"])
+            df_show = df_acc.copy()
+            if s_name:
+                df_show = df_show[df_show["username"].str.contains(s_name, case=False, na=False)]
+            if s_loc != "すべて":
+                loc_mask = (
+                    df_show["location"].fillna("").str.contains(s_loc, na=False) |
+                    df_show["content_region"].fillna("").str.contains(s_loc, na=False)
+                )
+                df_show = df_show[loc_mask]
+            if s_cat != "すべて":
+                cat_mask = (
+                    df_show["category"].fillna("").str.contains(s_cat, na=False) |
+                    df_show["content_genre"].fillna("").str.contains(s_cat, na=False)
+                )
+                df_show = df_show[cat_mask]
+            if s_date:
+                df_show = df_show[df_show["created_at"].astype(str).str.startswith(s_date)]
 
-        # エンゲージメント率推移
-        if len(df_single) >= 2:
-            st.markdown('<div class="section-head">エンゲージメント率推移</div>', unsafe_allow_html=True)
-            df_single["ER(%)"] = df_single.apply(
-                lambda r: calc_engagement_rate(
-                    int(r.get("followers",0)),
-                    int(r.get("avg_likes",0)),
-                    int(r.get("avg_comments",0))
-                ), axis=1
+            st.caption(f"{len(df_show)}件")
+
+            # メトリクスを付与して比較テーブルを生成
+            rows = []
+            for _, row in df_show.iterrows():
+                aid = int(row["id"])
+                m   = get_latest_metrics(aid, df_hist, df_posts)
+                loc = row.get("location","") or row.get("content_region","") or ""
+                cat = row.get("category","") or row.get("content_genre","") or ""
+                rows.append({
+                    "_id":         aid,
+                    "アカウント":   row["username"],
+                    "発信地":       loc,
+                    "カテゴリー":   cat,
+                    "フォロワー(万)": f"{m['followers_raw']:.1f}万" if m['followers_raw'] > 0 else "—",
+                    "増加率(%)":    f"{m['growth']:+.1f}%" if m["growth"] is not None else "—",
+                    "ER(%)":        m["er"],
+                    "平均いいね":   m["avg_likes"],
+                    "平均コメント": m["avg_comments"],
+                    "投稿頻度":     f"{m['weekly_posts']:.1f}本/週" if m["weekly_posts"] > 0 else "—",
+                })
+
+            # テーブル + クリックで詳細へ
+            for row_d in rows:
+                aid = row_d["_id"]
+                c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 = st.columns([2.5,1.5,2,1.2,1.2,1,1,1,1.5,0.8])
+                with c1:
+                    if st.button(row_d["アカウント"], key=f"go_{aid}"):
+                        st.session_state["selected_competitor_id"] = aid; st.rerun()
+                with c2:  st.caption(row_d["発信地"])
+                with c3:  st.caption(row_d["カテゴリー"])
+                with c4:  st.caption(row_d["フォロワー(万)"])
+                with c5:  st.caption(row_d["増加率(%)"])
+                with c6:  st.caption(f"ER {row_d['ER(%)']}%")
+                with c7:  st.caption(f"❤️{row_d['平均いいね']:,}")
+                with c8:  st.caption(f"💬{row_d['平均コメント']:,}")
+                with c9:  st.caption(row_d["投稿頻度"])
+                with c10:
+                    if st.button("詳細", key=f"det_{aid}"):
+                        st.session_state["selected_competitor_id"] = aid; st.rerun()
+
+    # ── タブ2: 新規登録 ───────────────────────────────────────────────────────
+    with tab_register:
+        st.markdown('<div class="section-head">新規アカウントを登録</div>', unsafe_allow_html=True)
+        with st.form(key="register_form"):
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                new_uname = st.text_input("Instagramユーザー名 *", placeholder="例: @tokyo_travel")
+                new_loc   = st.selectbox("発信地", ["未設定"]+LOCATIONS, key="reg_loc")
+                new_region= st.text_input("拠点詳細（任意）", placeholder="例: 東京都在住")
+            with rc2:
+                new_cat   = st.selectbox("カテゴリー", ["未設定"]+CATEGORIES, key="reg_cat")
+                new_genre = st.text_input("詳細ジャンル（任意）")
+                new_note  = st.text_area("メモ", height=68)
+
+            if st.form_submit_button("登録する"):
+                if not new_uname.strip():
+                    st.markdown('<div class="err-box">ユーザー名は必須です</div>', unsafe_allow_html=True)
+                else:
+                    res = sb_insert("competitor_accounts", {
+                        "username":       new_uname.strip(),
+                        "platform":       "Instagram",
+                        "location":       new_loc if new_loc != "未設定" else None,
+                        "content_region": new_loc if new_loc != "未設定" else None,
+                        "region":         new_region.strip() or None,
+                        "category":       new_cat if new_cat != "未設定" else None,
+                        "content_genre":  new_cat if new_cat != "未設定" else None,
+                        "genre":          new_genre.strip() or None,
+                        "note":           new_note.strip() or None,
+                        "is_active":      True,
+                    })
+                    if res:
+                        st.markdown('<div class="success-box">登録しました</div>', unsafe_allow_html=True)
+                        st.cache_data.clear(); st.rerun()
+                    else:
+                        st.markdown('<div class="err-box">登録に失敗しました（同じユーザー名が既に存在する可能性があります）</div>', unsafe_allow_html=True)
+
+    # ── タブ3: 分析・市場戦略 ─────────────────────────────────────────────────
+    with tab_analysis:
+        if df_acc.empty or df_hist.empty:
+            st.markdown('<div class="info-box">データが不足しています。アカウントを登録し、月次データを入力してください。</div>', unsafe_allow_html=True)
+            st.stop()
+
+        # 数値変換
+        for col in ["followers","avg_likes","avg_comments","weekly_posts","followers_raw","engagement"]:
+            if col in df_hist.columns:
+                df_hist[col] = pd.to_numeric(df_hist[col], errors="coerce").fillna(0)
+
+        # アカウント名・地域・カテゴリーを結合
+        df_hist = df_hist.merge(
+            df_acc[["id","username","location","content_region","category","content_genre"]].rename(columns={"id":"account_id"}),
+            on="account_id", how="left"
+        )
+        df_hist["loc_disp"] = df_hist["location"].fillna("") + df_hist["content_region"].fillna("")
+        df_hist["loc_disp"] = df_hist["loc_disp"].str[:4].replace("","不明")
+        df_hist["cat_disp"] = df_hist["category"].fillna("") + df_hist["content_genre"].fillna("")
+
+        # ── 全体分析サマリー ──────────────────────────────────────────────────
+        st.markdown('<div class="section-head">全体分析サマリー</div>', unsafe_allow_html=True)
+
+        # 各アカウントの最新データを集計
+        summary_rows = []
+        for _, acc in df_acc.iterrows():
+            aid = int(acc["id"])
+            m   = get_latest_metrics(aid, df_hist, df_posts)
+            if m["followers"] == 0: continue
+            summary_rows.append({
+                "account_id": aid,
+                "username":   acc["username"],
+                "location":   acc.get("location","") or acc.get("content_region","") or "不明",
+                "category":   acc.get("category","") or acc.get("content_genre","") or "不明",
+                "er":         m["er"],
+                "avg_likes":  m["avg_likes"],
+                "avg_comments": m["avg_comments"],
+                "weekly_posts": m["weekly_posts"],
+                "growth":     m["growth"] or 0,
+            })
+
+        if summary_rows:
+            df_summary = pd.DataFrame(summary_rows)
+            avg_er     = df_summary["er"].mean()
+            avg_likes  = df_summary["avg_likes"].mean()
+            avg_wp     = df_summary["weekly_posts"].mean()
+            grow_pos   = len(df_summary[df_summary["growth"] > 0])
+            grow_neg   = len(df_summary[df_summary["growth"] < 0])
+
+            st.markdown(f"""<div class="metric-row">
+              <div class="metric-card"><div class="val">{len(df_summary)}</div><div class="lbl">分析対象アカウント数</div></div>
+              <div class="metric-card"><div class="val">{avg_er:.2f}%</div><div class="lbl">平均ER</div></div>
+              <div class="metric-card"><div class="val">{avg_likes:,.0f}</div><div class="lbl">平均いいね数</div></div>
+              <div class="metric-card"><div class="val">{avg_wp:.1f}本/週</div><div class="lbl">平均投稿頻度</div></div>
+              <div class="metric-card"><div class="val" style="color:#15803d;">{grow_pos}社</div><div class="lbl">フォロワー増加中</div></div>
+              <div class="metric-card"><div class="val" style="color:#dc2626;">{grow_neg}社</div><div class="lbl">フォロワー減少中</div></div>
+            </div>""", unsafe_allow_html=True)
+
+            # ── 発信地別分析 ──────────────────────────────────────────────────
+            st.markdown('<div class="section-head">発信地別分析</div>', unsafe_allow_html=True)
+            loc_group = df_summary.groupby("location").agg(
+                アカウント数=("account_id","count"),
+                平均ER=("er","mean"),
+                平均いいね=("avg_likes","mean"),
+                平均フォロワー増加率=("growth","mean"),
+            ).round(2).sort_values("平均フォロワー増加率", ascending=False)
+
+            st.dataframe(loc_group, use_container_width=True)
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown("**発信地別 平均フォロワー増加率(%)**")
+                st.bar_chart(loc_group["平均フォロワー増加率"])
+            with col_b:
+                st.markdown("**発信地別 平均エンゲージメント率(%)**")
+                st.bar_chart(loc_group["平均ER"])
+
+            # 市場戦略自動レポート
+            st.markdown('<div class="section-head">市場戦略レポート（自動生成）</div>', unsafe_allow_html=True)
+            best_loc  = loc_group["平均フォロワー増加率"].idxmax()
+            worst_loc = loc_group["平均フォロワー増加率"].idxmin()
+            best_rate = loc_group.loc[best_loc,"平均フォロワー増加率"]
+            worst_rate= loc_group.loc[worst_loc,"平均フォロワー増加率"]
+
+            if best_rate > 5:
+                st.markdown(f'<div class="success-box">✅ <strong>{best_loc}</strong>系コンテンツの平均フォロワー増加率が+{best_rate:.1f}%で最も高い。{best_loc}へのコンテンツシフトを推奨します。</div>', unsafe_allow_html=True)
+            elif best_rate < 1:
+                st.markdown('<div class="err-box">⚠️ 全地域でフォロワー増加率が低迷しています。市場全体が飽和状態の可能性があります。新しい切り口や地域の検討を推奨します。</div>', unsafe_allow_html=True)
+            if worst_rate < -2:
+                st.markdown(f'<div class="err-box">⚠️ <strong>{worst_loc}</strong>系コンテンツの成長率が{worst_rate:.1f}%と最も低い。{worst_loc}コンテンツの縮小を検討してください。</div>', unsafe_allow_html=True)
+            if avg_er < 1:
+                st.markdown('<div class="err-box">⚠️ 競合全体のエンゲージメント率が1%未満です。市場全体でユーザーの関心が低下している可能性があります。</div>', unsafe_allow_html=True)
+            elif avg_er > 3:
+                st.markdown(f'<div class="success-box">✅ 競合全体の平均ER {avg_er:.2f}%は高水準です。コンテンツの質向上が差別化の鍵です。</div>', unsafe_allow_html=True)
+
+            # ── アカウント別比較 ──────────────────────────────────────────────
+            st.markdown('<div class="section-head">アカウント別比較分析</div>', unsafe_allow_html=True)
+            sel_accounts = st.multiselect(
+                "比較するアカウントを選択（複数可）",
+                df_summary["username"].tolist(),
+                default=df_summary["username"].tolist()[:min(5, len(df_summary))],
+                key="cmp_sel"
             )
-            st.line_chart(df_single.set_index("recorded_date")["ER(%)"])
+            if sel_accounts:
+                df_cmp = df_summary[df_summary["username"].isin(sel_accounts)].set_index("username")
 
-        # 週間投稿数推移
-        if "weekly_posts" in df_single.columns and len(df_single) >= 2:
-            st.markdown('<div class="section-head">週間投稿数推移（推定）</div>', unsafe_allow_html=True)
-            df_single["weekly_posts_f"] = pd.to_numeric(df_single["weekly_posts"], errors="coerce").fillna(0)
-            st.bar_chart(df_single.set_index("recorded_date")["weekly_posts_f"])
+                col_x, col_y = st.columns(2)
+                with col_x:
+                    st.markdown("**エンゲージメント率比較(%)**")
+                    st.bar_chart(df_cmp["er"])
+                with col_y:
+                    st.markdown("**フォロワー増加率比較(%)**")
+                    st.bar_chart(df_cmp["growth"])
 
-    # ── 直近投稿分析 ─────────────────────────────────────────────────────
-    if not df_posts.empty:
-        st.markdown('<div class="section-head">直近投稿 いいね・コメント分析</div>', unsafe_allow_html=True)
-        df_posts_acc = df_posts[df_posts["account_id"] == acc_id].copy()
-        if not df_posts_acc.empty:
-            for col in ["likes","comments"]:
-                df_posts_acc[col] = pd.to_numeric(df_posts_acc[col], errors="coerce").fillna(0).astype(int)
-            df_posts_acc["エンゲージメント"] = df_posts_acc["likes"] + df_posts_acc["comments"]
-            st.dataframe(
-                df_posts_acc[["post_date","likes","comments","エンゲージメント","post_url"]]\
-                    .rename(columns={"post_date":"投稿日","likes":"いいね","comments":"コメント","post_url":"URL"})\
-                    .sort_values("投稿日", ascending=False),
-                use_container_width=True, hide_index=True
-            )
-            st.bar_chart(df_posts_acc.set_index("post_date")["エンゲージメント"])
+                col_z, col_w = st.columns(2)
+                with col_z:
+                    st.markdown("**平均いいね数比較**")
+                    st.bar_chart(df_cmp["avg_likes"])
+                with col_w:
+                    st.markdown("**投稿頻度比較（本/週）**")
+                    st.bar_chart(df_cmp["weekly_posts"])
+
+                # フォロワー推移（折れ線）
+                st.markdown("**フォロワー推移（万人）**")
+                pivot_fw = df_hist[df_hist["username"].isin(sel_accounts)].copy()
+                if not pivot_fw.empty and "followers_raw" in pivot_fw.columns:
+                    fw_wide = pivot_fw.groupby(["recorded_date","username"])["followers_raw"].mean().reset_index()
+                    fw_wide = fw_wide.pivot(index="recorded_date", columns="username", values="followers_raw").fillna(0)
+                    st.line_chart(fw_wide)
