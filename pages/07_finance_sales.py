@@ -77,8 +77,9 @@ def calc_patreon_mrr(df_subs: pd.DataFrame, year_month: str) -> int:
         s = str(row.get("start_date","") or "")
         e = str(row.get("end_date","")   or "")
         p = int(row.get("monthly_price", 0) or 0)
-        if not s or s > ym_end:                        continue
-        if e and e not in ("None","") and e < ym_start: continue
+        if not s or s > ym_end:                                          continue
+        if e and e.lower() not in ("none","null",""):  # "null"文字列も空扱い
+            if e < ym_start: continue
         total += p
     return total
 
@@ -107,6 +108,14 @@ def load_sales_data():
     return to_df(rows_p), to_df(rows_pr), to_df(rows_e), to_df(rows_s)
 
 df_p_raw, df_prods, df_e, df_subs = load_sales_data()
+
+# patreon_subscriptions の end_date を正規化
+# DBから "null" 文字列で返ってくる場合に None に統一する
+if not df_subs.empty and "end_date" in df_subs.columns:
+    df_subs = df_subs.copy()
+    df_subs["end_date"] = df_subs["end_date"].apply(
+        lambda x: None if (x is None or str(x).lower() in ("null","none","")) else str(x)
+    )
 
 # purchases 前処理
 if not df_p_raw.empty:
