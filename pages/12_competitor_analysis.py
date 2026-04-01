@@ -49,23 +49,29 @@ def calc_weekly_posts(df_posts_sorted: pd.DataFrame) -> float:
         return 0.0
 
 def get_latest_metrics(acc_id: int, df_hist: pd.DataFrame, df_posts: pd.DataFrame) -> dict:
-    """アカウントの最新メトリクスを一括取得"""
+    """アカウントの最新メトリクスを一括取得。型不一致によるNaNを防ぐ。"""
     result = {"followers": 0, "followers_raw": 0.0, "avg_likes": 0,
               "avg_comments": 0, "weekly_posts": 0.0, "er": 0.0, "growth": None}
     if not df_hist.empty:
-        ah = df_hist[df_hist["account_id"] == acc_id].sort_values("recorded_date")
+        # account_id を int に統一してから比較（str/int混在対策）
+        df_hist_typed = df_hist.copy()
+        df_hist_typed["account_id"] = pd.to_numeric(df_hist_typed["account_id"], errors="coerce").fillna(-1).astype(int)
+        ah = df_hist_typed[df_hist_typed["account_id"] == int(acc_id)].sort_values("recorded_date")
         if not ah.empty:
             latest = ah.iloc[-1]
-            f   = int(latest.get("followers",0) or 0)
-            l   = int(latest.get("avg_likes",0) or 0)
-            c   = int(latest.get("avg_comments",0) or 0)
-            fw  = float(latest.get("followers_raw",0) or 0)
+            f  = int(latest.get("followers",0) or 0)
+            l  = int(latest.get("avg_likes",0) or 0)
+            c  = int(latest.get("avg_comments",0) or 0)
+            fw = float(latest.get("followers_raw",0) or 0)
             result.update({"followers": f, "followers_raw": fw,
                            "avg_likes": l, "avg_comments": c, "er": calc_er(f,l,c)})
             if len(ah) >= 2:
                 result["growth"] = calc_growth(int(ah.iloc[0]["followers"] or 0), f)
     if not df_posts.empty:
-        ap = df_posts[df_posts["account_id"] == acc_id].sort_values("post_date", ascending=False)
+        # account_id を int に統一
+        df_posts_typed = df_posts.copy()
+        df_posts_typed["account_id"] = pd.to_numeric(df_posts_typed["account_id"], errors="coerce").fillna(-1).astype(int)
+        ap = df_posts_typed[df_posts_typed["account_id"] == int(acc_id)].sort_values("post_date", ascending=False)
         if not ap.empty:
             ap["likes"]    = pd.to_numeric(ap["likes"],    errors="coerce").fillna(0)
             ap["comments"] = pd.to_numeric(ap["comments"], errors="coerce").fillna(0)
