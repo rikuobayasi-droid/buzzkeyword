@@ -176,18 +176,30 @@ def get_period_expenses() -> pd.DataFrame:
 filt_p   = get_period_purchases()
 filt_e   = get_period_expenses()
 
-# 修正2: 期間内Patreon = start_date が期間内のもの（日別ロジック）
-filt_pat = calc_patreon_period(df_subs, f_from, f_to) if f_biz in ("すべて","Patreon") else 0
+# Patreon売上の計算:
+#   日別・期間指定 → start_date が期間内のサブスクを合計（契約開始日ベース）
+#   月別           → 期間内の各月MRRを合計（より正確な月次売上）
+if f_biz in ("すべて","Patreon"):
+    if view_by == "月別":
+        # 月別: 期間内の各月MRRを合計
+        period_months_calc = month_range_list(f_from, f_to)
+        filt_pat = sum(patreon_monthly.get(ym, 0) for ym in period_months_calc)
+    else:
+        # 日別・年別: 契約開始日ベース
+        filt_pat = calc_patreon_period(df_subs, f_from, f_to)
+else:
+    filt_pat = 0
+
 filt_pur = int(filt_p["amount"].sum()) if not filt_p.empty else 0
-filt_tot = filt_pur + filt_pat
+filt_tot = filt_pur + filt_pat   # 総売上 = Patreon MRR + その他事業
 filt_exp = int(filt_e["amount_out"].sum()) if not filt_e.empty and "amount_out" in filt_e.columns else 0
 filt_prf = filt_tot - filt_exp
 p_color  = "#15803d" if filt_prf >= 0 else "#dc2626"
 period_label = f"{from_str} 〜 {to_str}"
 
 st.markdown(f"""<div class="metric-row">
-  <div class="metric-card"><div class="val">¥{filt_tot:,}</div><div class="lbl">総売上</div></div>
-  <div class="metric-card"><div class="val">¥{filt_pat:,}</div><div class="lbl">Patreon売上</div></div>
+  <div class="metric-card"><div class="val">¥{filt_tot:,}</div><div class="lbl">総売上（Patreon+その他）</div></div>
+  <div class="metric-card"><div class="val">¥{filt_pat:,}</div><div class="lbl">Patreon {'MRR合計' if view_by == '月別' else '売上'}</div></div>
   <div class="metric-card"><div class="val">¥{filt_pur:,}</div><div class="lbl">その他事業売上</div></div>
   <div class="metric-card"><div class="val">¥{filt_exp:,}</div><div class="lbl">経費</div></div>
   <div class="metric-card"><div class="val" style="color:{p_color};">¥{filt_prf:,}</div><div class="lbl">利益</div></div>
@@ -289,24 +301,43 @@ elif view_by == "年別":
 # ── 事業別サマリー ────────────────────────────────────────────────────────────
 st.markdown('<div class="section-head">事業別サマリー</div>', unsafe_allow_html=True)
 
-# Patreon
+# Patreon: 検索期間のMRRを表示
 if f_biz in ("すべて","Patreon"):
     active_cnt = 0
     if not df_subs.empty:
         active_cnt = len(df_subs[
             df_subs["end_date"].apply(lambda x: x is None or str(x) in ("","None"))
         ])
+
+    # 検索期間内の月別MRRを集計（今月固定ではなく選択期間に連動）
+    period_months_for_mrr = month_range_list(f_from, f_to)
+    period_mrr_list = {ym: patreon_monthly.get(ym, 0) for ym in period_months_for_mrr}
+
+    # 単月選択の場合はその月のMRR、複数月の場合は月平均MRRを表示
+    if len(period_mrr_list) == 1:
+        # 単月: そのままMRRを表示
+        display_mrr       = list(period_mrr_list.values())[0]
+        display_mrr_label = f"{list(period_mrr_list.keys())[0]} MRR"
+    else:
+        # 複数月: 平均MRRと合計を両方表示
+        mrr_values        = [v for v in period_mrr_list.values() if v > 0]
+        display_mrr       = int(sum(mrr_values) / len(mrr_values)) if mrr_values else 0
+        display_mrr_label = f"期間平均MRR（{len(period_mrr_list)}ヶ月）"
+
+    # 参考: 今月のMRR
     current_mrr = patreon_monthly.get(today.strftime("%Y-%m"), 0)
+
     st.markdown(f"""
     <div class="metric-card" style="margin-bottom:.6rem;">
       <div style="display:flex;justify-content:space-between;margin-bottom:.4rem;">
         <span style="font-weight:700;color:#1e3a5f;">Patreon</span>
-        <span style="font-size:.72rem;color:#9ca3af;">日別=契約開始日計上 / 月別=MRR</span>
+        <span style="font-size:.72rem;color:#9ca3af;">DB保存なし・動的計算</span>
       </div>
       <div style="font-size:.9rem;display:flex;gap:2rem;flex-wrap:wrap;">
-        <span>今月MRR: <strong>¥{current_mrr:,}</strong></span>
+        <span>{display_mrr_label}: <strong>¥{display_mrr:,}</strong></span>
+        <span>期間合計: <strong>¥{filt_pat:,}</strong></span>
+        <span>今月MRR（参考）: <strong>¥{current_mrr:,}</strong></span>
         <span>契約中: <strong>{active_cnt}件</strong></span>
-        <span>期間内売上: <strong>¥{filt_pat:,}</strong></span>
       </div>
     </div>""", unsafe_allow_html=True)
 
