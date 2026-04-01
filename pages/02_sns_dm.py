@@ -227,6 +227,16 @@ with tab_analysis:
         else:
             st.markdown('<div class="err-box">正規化後にデータが0件になっています。date列の値を上記で確認してください。</div>', unsafe_allow_html=True)
         st.markdown(f"**dm_hourly_monthly件数:** {len(existing_hourly)}件")
+        if not existing_hourly.empty:
+            st.markdown(f"**hourlyカラム一覧:** {list(existing_hourly.columns)}")
+            st.markdown(f"**hour列の型:** `{existing_hourly['hour'].dtype}`")
+            st.markdown(f"**year_month列の一意値:** {sorted(existing_hourly['year_month'].dropna().unique().tolist())}")
+            # 2026-01の11時を直接確認
+            test = existing_hourly[
+                (existing_hourly["year_month"] == "2026-01") &
+                (existing_hourly["hour"] == 11)
+            ]
+            st.markdown(f"**2026-01 / hour=11 の件数:** {len(test)}件 / count合計: {int(test['count'].sum())}")
 
     if existing_daily.empty and existing_hourly.empty:
         st.markdown('<div class="info-box">まだデータがありません。スプレッドシートの「Tabibiyori 同期」→「全タブを同期する」を実行してください。</div>', unsafe_allow_html=True)
