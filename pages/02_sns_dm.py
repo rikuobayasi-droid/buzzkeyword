@@ -362,7 +362,11 @@ with tab_analysis:
             df_hf = df_hf[(df_hf["year_month"] >= from_ym) & (df_hf["year_month"] <= to_ym)]
 
         if not df_hf.empty:
-            hourly_agg = df_hf.groupby("hour")["count"].sum().reset_index()
+            # hour列をintに統一してからgroupby（str/int混在で特定時間が欠落する問題を防ぐ）
+            df_hf_agg = df_hf.copy()
+            df_hf_agg["hour"]  = pd.to_numeric(df_hf_agg["hour"],  errors="coerce").fillna(0).astype(int)
+            df_hf_agg["count"] = pd.to_numeric(df_hf_agg["count"], errors="coerce").fillna(0).astype(int)
+            hourly_agg = df_hf_agg.groupby("hour")["count"].sum().reset_index()
             hourly_agg = hourly_agg.set_index("hour").reindex(range(24), fill_value=0).reset_index()
             hourly_agg.columns = ["時間（JST）","DM数"]
             st.bar_chart(hourly_agg.set_index("時間（JST）"))
@@ -379,10 +383,20 @@ with tab_analysis:
 
         st.markdown('<div class="section-head">時間帯ヒートマップ</div>', unsafe_allow_html=True)
         if not df_hf.empty:
-            hmap      = df_hf.groupby(["year_month","hour"])["count"].sum().reset_index()
-            hmap_wide = hmap.pivot(index="year_month", columns="hour", values="count").fillna(0)
-            hmap_wide = hmap_wide.reindex(columns=range(24), fill_value=0).astype(int)
-            hmap_wide.columns = [f"{h:02d}時" for h in hmap_wide.columns]
+            # pivot前にhourを必ずintに変換（str混在で特定時間が欠落する問題を防ぐ）
+            df_hf_hmap = df_hf.copy()
+            df_hf_hmap["hour"]  = pd.to_numeric(df_hf_hmap["hour"],  errors="coerce").fillna(0).astype(int)
+            df_hf_hmap["count"] = pd.to_numeric(df_hf_hmap["count"], errors="coerce").fillna(0).astype(int)
+
+            hmap = df_hf_hmap.groupby(["year_month","hour"])["count"].sum().reset_index()
+
+            # pivot: hour列がintであることを保証してからreindex
+            hmap["hour"] = hmap["hour"].astype(int)
+            hmap_wide = hmap.pivot(index="year_month", columns="hour", values="count")
+
+            # 0〜23時を全列確保（欠損時間をfill_value=0で補完）
+            hmap_wide = hmap_wide.reindex(columns=list(range(24)), fill_value=0).fillna(0).astype(int)
+            hmap_wide.columns = [f"{h:02d}時" for h in range(24)]
             st.dataframe(hmap_wide, use_container_width=True)
 
     # ── 月別/週別集計 ─────────────────────────────────────────────────────────
