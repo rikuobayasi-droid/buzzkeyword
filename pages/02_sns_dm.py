@@ -45,10 +45,7 @@ def get_nationality(hour: int) -> list:
 def load_dm_daily() -> pd.DataFrame:
     """
     dm_daily を取得し date列を正規化する。
-    修正1対応:
-      - utc=True で timezone-aware な timestamp ("2026-03-01T00:00:00+00:00") も処理
-      - tz_convert(None) でナイーブなdatetimeに変換してからフォーマット
-      - 変換失敗行は除去せず元の文字列から再試行する
+    Supabaseのdate列がtext型/date型どちらでも対応。
     """
     rows = sb_select("dm_daily", order="date")
     df   = to_df(rows)
@@ -57,26 +54,35 @@ def load_dm_daily() -> pd.DataFrame:
     df = df.copy()
 
     def safe_to_date_str(val):
-        if pd.isna(val) or val == "": return None
-        # まず timezone-aware として試みる
-        try:
-            dt = pd.to_datetime(val, utc=True)
-            return dt.tz_convert(None).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-        # timezone-naive として試みる
-        try:
-            dt = pd.to_datetime(val)
-            return dt.strftime("%Y-%m-%d")
-        except Exception:
-            pass
-        # 文字列として直接処理（YYYY-MM-DD, YYYY/MM/DD）
-        try:
-            s = str(val).strip()[:10].replace("/", "-")
-            pd.to_datetime(s)  # 検証
+        if val is None: return None
+        if pd.isna(val) if not isinstance(val, str) else val == "": return None
+
+        s = str(val).strip()
+
+        # すでに YYYY-MM-DD 形式なら即返す（最速パス）
+        import re
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
             return s
+
+        # YYYY/MM/DD → YYYY-MM-DD
+        if re.match(r"^\d{4}/\d{2}/\d{2}$", s):
+            return s.replace("/", "-")
+
+        # timestamp系（"2026-03-01T..." or "2026-03-01 00:00..."）
+        # 先頭10文字を取り出す
+        if len(s) >= 10:
+            candidate = s[:10].replace("/", "-")
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", candidate):
+                return candidate
+
+        # pandas で変換（最終手段）
+        try:
+            return pd.to_datetime(s, utc=False).strftime("%Y-%m-%d")
         except Exception:
-            return None
+            try:
+                return pd.to_datetime(s, utc=True).tz_convert(None).strftime("%Y-%m-%d")
+            except Exception:
+                return None
 
     df["date"] = df["date"].apply(safe_to_date_str)
     df = df.dropna(subset=["date"])
@@ -195,19 +201,32 @@ with tab_analysis:
     existing_daily  = load_dm_daily()
     existing_hourly = to_df(sb_select("dm_hourly_monthly", order="hour"))
 
-    # ── デバッグ情報（修正1: データが見えない問題の診断）─────────────────────
+    # 修正4: hour列を必ず int に正規化（str "11" と int 11 の混在で11時が欠落する問題を防ぐ）
+    if not existing_hourly.empty:
+        existing_hourly = existing_hourly.copy()
+        existing_hourly["hour"]  = pd.to_numeric(existing_hourly["hour"],  errors="coerce").fillna(0).astype(int)
+        existing_hourly["count"] = pd.to_numeric(existing_hourly["count"], errors="coerce").fillna(0).astype(int)
+
+    # ── デバッグ情報（問題診断用）────────────────────────────────────────────
     with st.expander("データ取得状況を確認（問題がある場合はここを開く）"):
-        st.markdown(f"**dm_daily 総件数:** {len(existing_daily)}件")
+        # 正規化前の生データも確認
+        raw_rows = sb_select("dm_daily", order="date")
+        df_raw   = to_df(raw_rows)
+        st.markdown(f"**Supabase取得件数（生データ）:** {len(df_raw)}件")
+        if not df_raw.empty:
+            st.markdown(f"**date列の型（先頭値）:** `{type(df_raw['date'].iloc[0]).__name__}` → 値: `{df_raw['date'].iloc[0]}`")
+            st.markdown(f"**dateの最新値（末尾）:** `{df_raw['date'].iloc[-1]}`")
+
+        st.markdown(f"**正規化後件数:** {len(existing_daily)}件")
         if not existing_daily.empty:
             year_counts = existing_daily["date"].str[:4].value_counts().sort_index()
             for yr, cnt in year_counts.items():
                 st.markdown(f"- {yr}年: {cnt}件")
-            st.markdown(f"**最古のデータ:** {existing_daily['date'].min()}")
-            st.markdown(f"**最新のデータ:** {existing_daily['date'].max()}")
-            st.markdown(f"**プラットフォーム一覧:** {', '.join(existing_daily['platform'].unique())}")
+            st.markdown(f"**最古:** {existing_daily['date'].min()} / **最新:** {existing_daily['date'].max()}")
+            st.markdown(f"**プラットフォーム:** {', '.join(existing_daily['platform'].unique())}")
         else:
-            st.markdown('<div class="err-box">dm_daily にデータがありません。スプレッドシートの同期を確認してください。</div>', unsafe_allow_html=True)
-        st.markdown(f"**dm_hourly_monthly 総件数:** {len(existing_hourly)}件")
+            st.markdown('<div class="err-box">正規化後にデータが0件になっています。date列の値を上記で確認してください。</div>', unsafe_allow_html=True)
+        st.markdown(f"**dm_hourly_monthly件数:** {len(existing_hourly)}件")
 
     if existing_daily.empty and existing_hourly.empty:
         st.markdown('<div class="info-box">まだデータがありません。スプレッドシートの「Tabibiyori 同期」→「全タブを同期する」を実行してください。</div>', unsafe_allow_html=True)
