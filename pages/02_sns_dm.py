@@ -237,6 +237,10 @@ with tab_analysis:
                 (existing_hourly["hour"] == 11)
             ]
             st.markdown(f"**2026-01 / hour=11 の件数:** {len(test)}件 / count合計: {int(test['count'].sum())}")
+            # 生の値を表示（count列が正しく取得できているか確認）
+            if not test.empty:
+                st.markdown(f"**生データ（先頭3件）:**")
+                st.dataframe(test[["year_month","platform","hour","count"]].head(3))
 
     if existing_daily.empty and existing_hourly.empty:
         st.markdown('<div class="info-box">まだデータがありません。スプレッドシートの「Tabibiyori 同期」→「全タブを同期する」を実行してください。</div>', unsafe_allow_html=True)
