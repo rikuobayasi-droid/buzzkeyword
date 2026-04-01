@@ -199,13 +199,28 @@ with tab_analysis:
 
     # 修正1: 正規化済みデータを取得してデバッグ情報を表示
     existing_daily  = load_dm_daily()
-    existing_hourly = to_df(sb_select("dm_hourly_monthly", order="hour"))
+    existing_hourly_raw = to_df(sb_select("dm_hourly_monthly", order="hour"))
 
-    # 修正4: hour列を必ず int に正規化（str "11" と int 11 の混在で11時が欠落する問題を防ぐ）
-    if not existing_hourly.empty:
-        existing_hourly = existing_hourly.copy()
-        existing_hourly["hour"]  = pd.to_numeric(existing_hourly["hour"],  errors="coerce").fillna(0).astype(int)
-        existing_hourly["count"] = pd.to_numeric(existing_hourly["count"], errors="coerce").fillna(0).astype(int)
+    # 修正4: 'count'はSupabaseの予約語のため値が0で返ってくる問題を修正
+    # select時に全カラムを取得し、count列をdm_countとしてREST APIから取得し直す
+    if not existing_hourly_raw.empty:
+        existing_hourly = existing_hourly_raw.copy()
+        # hour列をintに統一
+        existing_hourly["hour"] = pd.to_numeric(existing_hourly["hour"], errors="coerce").fillna(0).astype(int)
+        # count列が予約語の影響で0になっている場合、idから再取得する
+        # → Supabase REST APIで select="id,year_month,platform,hour,count" と明示的に指定
+        try:
+            from db import get_client
+            raw = get_client().table("dm_hourly_monthly").select("id,year_month,platform,hour,count").execute().data or []
+            if raw:
+                df_raw_h = pd.DataFrame(raw)
+                df_raw_h["hour"]  = pd.to_numeric(df_raw_h["hour"],  errors="coerce").fillna(0).astype(int)
+                df_raw_h["count"] = pd.to_numeric(df_raw_h["count"], errors="coerce").fillna(0).astype(int)
+                existing_hourly = df_raw_h
+        except Exception:
+            existing_hourly["count"] = pd.to_numeric(existing_hourly["count"], errors="coerce").fillna(0).astype(int)
+    else:
+        existing_hourly = existing_hourly_raw
 
     # ── デバッグ情報（問題診断用）────────────────────────────────────────────
     with st.expander("データ取得状況を確認（問題がある場合はここを開く）"):
