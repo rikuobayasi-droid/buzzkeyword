@@ -201,21 +201,33 @@ else:
 
 filt_pur = int(filt_p["amount"].sum()) if not filt_p.empty else 0
 
-# 今月のMRR（常に今月固定）
+# 今月のMRR（参考用）
 current_month_mrr = patreon_monthly.get(today.strftime("%Y-%m"), 0)
 
-# 総売上 = 今月のMRR + 検索期間内のその他事業売上
-filt_tot = filt_pur + current_month_mrr
+# 検索期間に応じたMRRを計算
+# 単月（開始月 = 終了月）→ その月のMRR
+# 複数月 → 期間内の月別MRRを合計
+period_months_calc = month_range_list(f_from, f_to)
+if len(period_months_calc) == 1:
+    # 単月: その月のMRR
+    period_mrr       = patreon_monthly.get(period_months_calc[0], 0)
+    period_mrr_label = f"{period_months_calc[0]} MRR"
+else:
+    # 複数月: 月別MRRの合計
+    period_mrr       = sum(patreon_monthly.get(ym, 0) for ym in period_months_calc)
+    period_mrr_label = f"期間MRR合計（{len(period_months_calc)}ヶ月）"
+
+# 総売上 = 検索期間のMRR + 検索期間内のその他事業売上
+filt_tot = filt_pur + period_mrr
 
 filt_exp = int(filt_e["amount_out"].sum()) if not filt_e.empty and "amount_out" in filt_e.columns else 0
-# 利益 = 総売上（今月MRR + その他事業） - 経費
 filt_prf = filt_tot - filt_exp
 p_color  = "#15803d" if filt_prf >= 0 else "#dc2626"
 period_label = f"{from_str} 〜 {to_str}"
 
 st.markdown(f"""<div class="metric-row">
-  <div class="metric-card"><div class="val">¥{filt_tot:,}</div><div class="lbl">総売上（今月MRR+その他）</div></div>
-  <div class="metric-card"><div class="val">¥{current_month_mrr:,}</div><div class="lbl">今月のMRR（Patreon）</div></div>
+  <div class="metric-card"><div class="val">¥{filt_tot:,}</div><div class="lbl">総売上（MRR+その他）</div></div>
+  <div class="metric-card"><div class="val">¥{period_mrr:,}</div><div class="lbl">{period_mrr_label}</div></div>
   <div class="metric-card"><div class="val">¥{filt_pur:,}</div><div class="lbl">その他事業売上</div></div>
   <div class="metric-card"><div class="val">¥{filt_exp:,}</div><div class="lbl">経費</div></div>
   <div class="metric-card"><div class="val" style="color:{p_color};">¥{filt_prf:,}</div><div class="lbl">利益</div></div>
