@@ -201,27 +201,14 @@ with tab_analysis:
     existing_daily  = load_dm_daily()
     existing_hourly_raw = to_df(sb_select("dm_hourly_monthly", order="hour"))
 
-    # 修正4: 'count'はSupabaseの予約語のため値が0で返る問題を修正
-    # select時にカラム名を明示指定して正しい値を取得する
     if not existing_hourly_raw.empty:
-        try:
-            from db import get_client
-            raw = get_client().table("dm_hourly_monthly").select(
-                "id,year_month,platform,hour,count"
-            ).execute().data or []
-            if raw:
-                existing_hourly = pd.DataFrame(raw)
-            else:
-                existing_hourly = existing_hourly_raw.copy()
-        except Exception:
-            existing_hourly = existing_hourly_raw.copy()
-
-        # hour を int に統一
+        existing_hourly = existing_hourly_raw.copy()
         existing_hourly["hour"] = pd.to_numeric(
             existing_hourly["hour"], errors="coerce"
         ).fillna(0).astype(int)
-
-        # count列が存在すれば int に変換、なければ 0 で作成
+        # DBのカラム名が dm_count（予約語countを変更済み）の場合 count にリネーム
+        if "dm_count" in existing_hourly.columns:
+            existing_hourly = existing_hourly.rename(columns={"dm_count": "count"})
         if "count" in existing_hourly.columns:
             existing_hourly["count"] = pd.to_numeric(
                 existing_hourly["count"], errors="coerce"
@@ -229,7 +216,7 @@ with tab_analysis:
         else:
             existing_hourly["count"] = 0
     else:
-        existing_hourly = existing_hourly_raw.copy() if not existing_hourly_raw.empty else pd.DataFrame()
+        existing_hourly = pd.DataFrame()
 
     # ── デバッグ情報（問題診断用）────────────────────────────────────────────
     with st.expander("データ取得状況を確認（問題がある場合はここを開く）"):
