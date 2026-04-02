@@ -290,6 +290,17 @@ if sel_id:
     with col_title:
         st.markdown(f'<div class="page-title">{cust["name"]}</div>', unsafe_allow_html=True)
 
+    # ── ポイント残高を詳細ページ上部に表示 ────────────────────────────────────
+    current_pts  = int(cust.get("total_points", 0) or 0)
+    cancel_rank  = cust.get("cancel_rank", "normal") or "normal"
+    RANK_BADGE   = {"normal":"","yellow":"🟡","red":"🔴","black":"⬛"}
+    rank_badge   = RANK_BADGE.get(cancel_rank, "")
+    st.markdown(f"""<div class="metric-row">
+      <div class="metric-card"><div class="val">🎯 {current_pts:,}pt</div><div class="lbl">保有ポイント</div></div>
+      <div class="metric-card"><div class="val">¥{current_pts:,}</div><div class="lbl">割引可能額（1pt=1円）</div></div>
+      {f'<div class="metric-card"><div class="val">{rank_badge} {cancel_rank.upper()}</div><div class="lbl">キャンセルランク</div></div>' if cancel_rank != "normal" else ""}
+    </div>""", unsafe_allow_html=True)
+
     tab_hist, tab_info = st.tabs(["購入履歴", "顧客情報"])
 
     with tab_hist:
@@ -327,10 +338,33 @@ if sel_id:
                         value=date.fromisoformat(str(edit_data.get("purchase_date",""))[:10]) if edit_data.get("purchase_date") else date.today(),
                         key=f"h_date_{cid}")
                 with fc2:
-                    h_amount  = st.number_input("支払額（¥）", min_value=0, value=int(edit_data.get("amount",0) or 0), step=100, key=f"h_amt_{cid}")
+                    h_amount  = st.number_input("定価・請求額（¥）", min_value=0, value=int(edit_data.get("amount",0) or 0), step=100, key=f"h_amt_{cid}")
                     h_payment = st.selectbox("支払方法", PAYMENT_TYPES,
                         index=PAYMENT_TYPES.index(edit_data.get("payment_type","現金")) if edit_data.get("payment_type","") in PAYMENT_TYPES else 0,
                         key=f"h_pay_{cid}")
+
+                # ── ポイント割引 ──────────────────────────────────────────────
+                st.markdown("**ポイント割引（任意）**")
+                pc1, pc2 = st.columns(2)
+                with pc1:
+                    h_use_points = st.number_input(
+                        f"使用ポイント（保有: {current_pts:,}pt）",
+                        min_value=0,
+                        max_value=current_pts,
+                        value=0,
+                        step=100,
+                        key=f"h_pts_{cid}",
+                        help="1pt = 1円として割引されます"
+                    )
+                with pc2:
+                    discounted_amount = max(h_amount - h_use_points, 0)
+                    st.markdown(
+                        f'<div class="info-box" style="margin-top:1.5rem;">'
+                        f'割引後支払額: <strong>¥{discounted_amount:,}</strong>'
+                        f'{"（ポイント使用: " + str(h_use_points) + "pt）" if h_use_points > 0 else ""}'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
 
                 matched_prod = df_prods_non_pat[df_prods_non_pat["name"] == h_prod_name]
                 is_tour      = not matched_prod.empty and matched_prod.iloc[0].get("category","") == "Tour"
@@ -361,24 +395,53 @@ if sel_id:
                 if submitted:
                     prod_id  = int(matched_prod.iloc[0]["id"]) if not matched_prod.empty else None
                     category = matched_prod.iloc[0].get("category","") if not matched_prod.empty else ""
-                    payload  = {
-                        "customer_id":   cid, "product_id": prod_id, "product_type": category,
-                        "purchase_date": str(h_date), "amount": h_amount, "payment_type": h_payment,
-                        "note": h_note, "order_note": h_order_note, "receptionist": h_receptionist,
-                        "tour_status":  h_tour_status  if is_tour else None,
-                        "meet_place":   h_meet         if is_tour else None,
-                        "guide_name":   h_guide        if is_tour else None,
-                        "participants": h_participants if is_tour else 1,
-                        "confirmed":    h_confirmed    if is_tour else False,
-                    }
-                    if editing_id:
-                        ok = sb_update("purchases", payload, {"id": editing_id})
-                        if ok: st.session_state.pop("editing_purchase_id", None); st.rerun()
-                        else:  st.error("更新に失敗しました")
+
+                    # ポイント割引バリデーション
+                    if h_use_points > current_pts:
+                        st.markdown(f'<div class="err-box">保有ポイント（{current_pts:,}pt）を超えています</div>', unsafe_allow_html=True)
                     else:
-                        res = sb_insert("purchases", payload)
-                        if res: st.rerun()
-                        else:   st.error("保存に失敗しました")
+                        # 割引後の支払額を保存
+                        final_amount = max(h_amount - h_use_points, 0)
+                        payload  = {
+                            "customer_id":   cid, "product_id": prod_id, "product_type": category,
+                            "purchase_date": str(h_date), "amount": final_amount,
+                            "payment_type": h_payment,
+                            "note": h_note, "order_note": h_order_note, "receptionist": h_receptionist,
+                            "tour_status":  h_tour_status  if is_tour else None,
+                            "meet_place":   h_meet         if is_tour else None,
+                            "guide_name":   h_guide        if is_tour else None,
+                            "participants": h_participants if is_tour else 1,
+                            "confirmed":    h_confirmed    if is_tour else False,
+                        }
+                        if editing_id:
+                            ok = sb_update("purchases", payload, {"id": editing_id})
+                            if ok: st.session_state.pop("editing_purchase_id", None); st.rerun()
+                            else:  st.error("更新に失敗しました")
+                        else:
+                            res = sb_insert("purchases", payload)
+                            if res:
+                                # ポイント使用があればRPCで消費
+                                if h_use_points > 0:
+                                    try:
+                                        from db import get_client
+                                        rpc_result = get_client().rpc("spend_points", {
+                                            "p_customer_id": cid,
+                                            "p_amount":      h_use_points,
+                                            "p_description": f"購入割引に使用（{h_prod_name} / {h_use_points:,}pt → ¥{h_use_points:,}割引）",
+                                        }).execute()
+                                        rpc_data = rpc_result.data
+                                        if isinstance(rpc_data, list): rpc_data = rpc_data[0]
+                                        if not (rpc_data and rpc_data.get("success")):
+                                            st.markdown(
+                                                f'<div class="err-box">⚠️ 購入は保存しましたがポイント消費に失敗しました: '
+                                                f'{rpc_data.get("error","不明") if rpc_data else "不明"}</div>',
+                                                unsafe_allow_html=True
+                                            )
+                                    except Exception as e:
+                                        st.markdown(f'<div class="err-box">⚠️ ポイント消費エラー: {e}</div>', unsafe_allow_html=True)
+                                st.rerun()
+                            else:
+                                st.error("保存に失敗しました")
 
         st.markdown('<div class="section-head">購入履歴一覧</div>', unsafe_allow_html=True)
         rows_pur = sb_select("purchases", filters={"customer_id": cid}, order="-purchase_date")
