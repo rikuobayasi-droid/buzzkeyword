@@ -337,8 +337,21 @@ with tab_analysis:
         period_label = f"{p_start} 〜 {p_end}"
 
     # ── 選択期間のサマリー ────────────────────────────────────────────────────
-    # 修正2: 実績は dm_daily から自動集計
-    sel_actual = int(df_filtered["count"].sum()) if not df_filtered.empty else 0
+    # デバッグ: フィルター後のデータ件数を表示
+    with st.expander("フィルター結果を確認（4月が表示されない場合はここを開く）"):
+        st.markdown(f"**選択条件:** year={sel_year if search_mode=='年・月・日を選択' else '期間指定'} / month={sel_month_num if search_mode=='年・月・日を選択' else '-'}")
+        st.markdown(f"**f_prefix:** `{f_prefix if search_mode=='年・月・日を選択' else 'N/A'}`")
+        st.markdown(f"**p_start:** `{p_start}` / **p_end:** `{p_end}`")
+        st.markdown(f"**df_filtered件数:** {len(df_filtered)}件")
+        if not df_filtered.empty:
+            st.markdown(f"**df_filteredの日付範囲:** {df_filtered['date'].min()} 〜 {df_filtered['date'].max()}")
+            st.markdown(f"**df_filteredの先頭5件:**")
+            st.dataframe(df_filtered[["date","platform","count"]].head(5))
+        else:
+            st.markdown("**df_filtered は空です**")
+            st.markdown(f"**existing_daily件数:** {len(existing_daily)}件")
+            if not existing_daily.empty:
+                st.markdown(f"**existing_dailyの2026-04データ件数:** {len(existing_daily[existing_daily['date'].str.startswith('2026-04')])}件")
     sel_goal   = 0
     if search_mode == "年・月・日を選択" and sel_year != "すべて" and sel_month_num != "すべて" and not sel_day.strip():
         sel_goal = get_goal(f"{sel_year}-{sel_month_num}")
