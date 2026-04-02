@@ -199,16 +199,20 @@ with tab_analysis:
 
     # 修正1: 正規化済みデータを取得してデバッグ情報を表示
     existing_daily  = load_dm_daily()
-    existing_hourly_raw = to_df(sb_select("dm_hourly_monthly", order="hour"))
+    existing_hourly_raw = to_df(sb_select(
+        "dm_hourly_monthly",
+        order="hour",
+        columns="id,year_month,platform,hour,dm_count"
+    ))
 
     if not existing_hourly_raw.empty:
         existing_hourly = existing_hourly_raw.copy()
+        # dm_count → count にリネーム（以降のコードはcountで統一）
+        if "dm_count" in existing_hourly.columns:
+            existing_hourly = existing_hourly.rename(columns={"dm_count": "count"})
         existing_hourly["hour"] = pd.to_numeric(
             existing_hourly["hour"], errors="coerce"
         ).fillna(0).astype(int)
-        # DBのカラム名が dm_count（予約語countを変更済み）の場合 count にリネーム
-        if "dm_count" in existing_hourly.columns:
-            existing_hourly = existing_hourly.rename(columns={"dm_count": "count"})
         if "count" in existing_hourly.columns:
             existing_hourly["count"] = pd.to_numeric(
                 existing_hourly["count"], errors="coerce"
