@@ -251,11 +251,12 @@ with tab_analysis:
                 (existing_hourly["year_month"] == "2026-01") &
                 (existing_hourly["hour"] == 11)
             ]
-            st.markdown(f"**2026-01 / hour=11 の件数:** {len(test)}件 / count合計: {int(test['count'].sum())}")
-            # 生の値を表示（count列が正しく取得できているか確認）
+            cnt_sum = int(test["count"].sum()) if "count" in test.columns else "count列なし"
+            st.markdown(f"**2026-01 / hour=11:** {len(test)}件 / count合計: {cnt_sum}")
             if not test.empty:
-                st.markdown(f"**生データ（先頭3件）:**")
-                st.dataframe(test[["year_month","platform","hour","count"]].head(3))
+                st.markdown("**生データ（先頭5件）:**")
+                show_cols = [c for c in ["year_month","platform","hour","count","dm_count"] if c in test.columns]
+                st.dataframe(test[show_cols].head(5))
 
     if existing_daily.empty and existing_hourly.empty:
         st.markdown('<div class="info-box">まだデータがありません。スプレッドシートの「Tabibiyori 同期」→「全タブを同期する」を実行してください。</div>', unsafe_allow_html=True)
@@ -289,6 +290,7 @@ with tab_analysis:
                     f_prefix = f"{sel_year}-{sel_month_num}-{day_str}"
 
         # 表示期間の決定
+        # 問題③修正: p_end は「月の最終日」を使う（df_filtered.max()は欠損日に依存するため）
         if f_prefix == "":
             if not existing_daily.empty:
                 p_start = date.fromisoformat(existing_daily["date"].min())
@@ -300,14 +302,19 @@ with tab_analysis:
         else:
             df_filtered  = existing_daily[existing_daily["date"].str.startswith(f_prefix)].copy() if not existing_daily.empty else pd.DataFrame()
             period_label = f_prefix
-            if not df_filtered.empty:
-                p_start = date.fromisoformat(df_filtered["date"].min())
-                p_end   = date.fromisoformat(df_filtered["date"].max())
+            if sel_year != "すべて" and sel_month_num != "すべて" and sel_day.strip():
+                # 特定日指定
+                try:
+                    p_start = p_end = date(int(sel_year), int(sel_month_num), int(sel_day.strip()))
+                except Exception:
+                    p_start = p_end = date.today()
             elif sel_year != "すべて" and sel_month_num != "すべて":
-                y, m   = int(sel_year), int(sel_month_num)
+                # 月指定: p_start=月初、p_end=月末（欠損日に依存しない）
+                y, m    = int(sel_year), int(sel_month_num)
                 p_start = date(y, m, 1)
                 p_end   = date(y, m, monthrange(y, m)[1])
             elif sel_year != "すべて":
+                # 年指定
                 p_start = date(int(sel_year), 1, 1)
                 p_end   = date(int(sel_year), 12, 31)
             else:
