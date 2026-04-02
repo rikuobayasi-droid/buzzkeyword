@@ -529,7 +529,9 @@ else:
             df_pts["total_points"] = 0
         df_pts["total_points"] = pd.to_numeric(df_pts["total_points"], errors="coerce").fillna(0).astype(int)
 
-        pt_sub1, pt_sub2, pt_sub3 = st.tabs(["ポイント一覧", "ポイント付与", "ポイント譲渡"])
+        pt_sub1, pt_sub2, pt_sub3, pt_sub4, pt_sub5 = st.tabs([
+            "ポイント一覧", "一括付与", "個別付与", "ポイント譲渡", "調整・削除"
+        ])
 
         # ── ポイント一覧 ──────────────────────────────────────────────────────
         with pt_sub1:
@@ -574,8 +576,92 @@ else:
             else:
                 st.markdown('<div class="info-box">取引履歴がまだありません</div>', unsafe_allow_html=True)
 
-        # ── ポイント付与 ──────────────────────────────────────────────────────
+        # ── 一括付与（purchases履歴から自動計算）────────────────────────────
         with pt_sub2:
+            st.markdown('<div class="section-head">購入履歴からポイント一括付与</div>', unsafe_allow_html=True)
+            st.caption("purchasesテーブルのPatreon以外の購入履歴から支払い総額の5%を計算して付与します。")
+
+            # purchases を取得（Patreon除外）
+            df_pur_all = to_df(sb_select("purchases", order="-purchase_date"))
+            if df_pur_all.empty:
+                st.markdown('<div class="info-box">購入データがありません</div>', unsafe_allow_html=True)
+            else:
+                # Patreon以外に絞り込み
+                if "product_type" in df_pur_all.columns:
+                    df_pur_valid = df_pur_all[df_pur_all["product_type"] != "Patreon"].copy()
+                else:
+                    df_pur_valid = df_pur_all.copy()
+
+                df_pur_valid["amount"] = pd.to_numeric(df_pur_valid["amount"], errors="coerce").fillna(0)
+                df_pur_valid["customer_id"] = pd.to_numeric(df_pur_valid["customer_id"], errors="coerce").dropna().astype(int)
+
+                # 顧客ごとの支払い総額を集計
+                grp = df_pur_valid.groupby("customer_id")["amount"].sum().reset_index()
+                grp.columns = ["customer_id", "total_amount"]
+                grp["points_to_grant"] = (grp["total_amount"] * 0.05).apply(lambda x: int(x))
+                grp = grp[grp["points_to_grant"] > 0]
+
+                # 顧客名を結合
+                grp = grp.merge(
+                    df_pts[["id","name","total_points"]].rename(columns={"id":"customer_id"}),
+                    on="customer_id", how="left"
+                )
+                grp = grp.dropna(subset=["name"])
+
+                st.markdown(f"**対象顧客: {len(grp)}名**")
+                st.dataframe(
+                    grp[["name","total_amount","points_to_grant","total_points"]].rename(columns={
+                        "name":"顧客名",
+                        "total_amount":"購入総額(円)",
+                        "points_to_grant":"付与予定pt",
+                        "total_points":"現在残高pt"
+                    }),
+                    use_container_width=True, hide_index=True
+                )
+
+                st.markdown(f"**付与予定合計: {grp['points_to_grant'].sum():,}pt**")
+                st.caption("⚠️ 既にポイントが付与されている顧客にも再付与されます。初回のみ実行してください。")
+
+                if st.button("一括ポイント付与を実行する", key="bulk_grant_btn"):
+                    from db import get_client
+                    success_count = 0
+                    error_msgs    = []
+                    prog = st.progress(0)
+                    total = len(grp)
+
+                    for i, (_, row) in enumerate(grp.iterrows()):
+                        cid    = int(row["customer_id"])
+                        amount = int(row["total_amount"])
+                        try:
+                            result = get_client().rpc("earn_points", {
+                                "p_customer_id":     cid,
+                                "p_purchase_amount": amount,
+                                "p_description":     f"購入履歴一括付与（総額 {amount:,}円 × 5%）",
+                            }).execute()
+                            res = result.data
+                            if isinstance(res, list): res = res[0]
+                            if res and res.get("success"):
+                                success_count += 1
+                            else:
+                                error_msgs.append(f"{row['name']}: {res.get('error','不明') if res else '失敗'}")
+                        except Exception as e:
+                            error_msgs.append(f"{row['name']}: {e}")
+                        prog.progress((i+1)/total)
+
+                    st.markdown(
+                        f'<div class="success-box">✅ {success_count}名へポイント付与完了</div>',
+                        unsafe_allow_html=True
+                    )
+                    if error_msgs:
+                        st.markdown(
+                            f'<div class="err-box">❌ エラー {len(error_msgs)}件:<br>' +
+                            "<br>".join(error_msgs[:5]) + "</div>",
+                            unsafe_allow_html=True
+                        )
+                    st.cache_data.clear()
+
+        # ── 個別付与 ──────────────────────────────────────────────────────────
+        with pt_sub3:
             st.markdown('<div class="section-head">購入ポイント付与（購入金額 × 5%）</div>', unsafe_allow_html=True)
 
             customer_opts = {f"{row['name']} (ID:{row['id']}, 現在:{int(row['total_points']):,}pt)": int(row["id"])
@@ -627,7 +713,7 @@ else:
                             st.markdown(f'<div class="err-box">❌ RPC呼び出しエラー: {e}</div>', unsafe_allow_html=True)
 
         # ── ポイント譲渡 ──────────────────────────────────────────────────────
-        with pt_sub3:
+        with pt_sub4:
             st.markdown('<div class="section-head">ポイント譲渡（顧客間）</div>', unsafe_allow_html=True)
             st.caption("送信者のポイントを減算し、受信者へ加算します。残高不足の場合は失敗します。")
 
@@ -690,3 +776,136 @@ else:
                                 st.markdown(f'<div class="err-box">❌ エラー: {err}</div>', unsafe_allow_html=True)
                         except Exception as e:
                             st.markdown(f'<div class="err-box">❌ RPC呼び出しエラー: {e}</div>', unsafe_allow_html=True)
+
+        # ── 調整・削除タブ ────────────────────────────────────────────────────
+        with pt_sub5:
+            st.markdown('<div class="section-head">ポイント調整・取引削除</div>', unsafe_allow_html=True)
+            st.caption("誤ったポイント付与・譲渡を修正します。取引ログの削除と顧客残高の手動調整が可能です。")
+
+            adj_sub1, adj_sub2 = st.tabs(["残高を直接修正", "取引履歴を削除"])
+
+            # ── 残高直接修正 ──────────────────────────────────────────────────
+            with adj_sub1:
+                st.markdown('<div class="section-head">顧客のポイント残高を直接修正</div>', unsafe_allow_html=True)
+                st.caption("⚠️ 緊急時のみ使用してください。通常はRPC経由で操作することを推奨します。")
+
+                customer_opts_adj = {
+                    f"{row['name']} (現在: {int(row['total_points']):,}pt)": int(row["id"])
+                    for _, row in df_pts.iterrows()
+                }
+
+                with st.form(key="adj_form"):
+                    sel_adj_cust = st.selectbox("顧客を選択", list(customer_opts_adj.keys()), key="adj_cust")
+                    adj_cid      = customer_opts_adj[sel_adj_cust]
+                    cur_pts      = int(df_pts[df_pts["id"] == adj_cid]["total_points"].values[0])
+
+                    adj_mode = st.radio("調整方法", ["加算", "減算", "残高を直接指定"], horizontal=True)
+                    adj_val  = st.number_input("ポイント数", min_value=0, value=0, step=10)
+                    adj_note = st.text_input("調整理由（必須）", placeholder="例: 誤付与のため取消")
+
+                    # プレビュー
+                    if adj_mode == "加算":
+                        new_pts = cur_pts + adj_val
+                        adj_amount = adj_val
+                    elif adj_mode == "減算":
+                        new_pts = max(cur_pts - adj_val, 0)
+                        adj_amount = -adj_val
+                    else:
+                        new_pts = adj_val
+                        adj_amount = adj_val - cur_pts
+
+                    st.markdown(
+                        f'<div class="info-box">'
+                        f'現在残高: <strong>{cur_pts:,}pt</strong> → '
+                        f'修正後残高: <strong>{new_pts:,}pt</strong>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
+                    if st.form_submit_button("残高を修正する"):
+                        if not adj_note.strip():
+                            st.markdown('<div class="err-box">調整理由を入力してください</div>', unsafe_allow_html=True)
+                        else:
+                            from db import sb_update
+                            # customers テーブルを直接更新
+                            ok = sb_update("customers", {"total_points": new_pts}, {"id": adj_cid})
+                            if ok:
+                                # 取引ログも記録（admin種別）
+                                try:
+                                    from db import sb_insert as sb_ins
+                                    sb_ins("point_transactions", {
+                                        "user_id":          adj_cid,
+                                        "transaction_type": "admin",
+                                        "amount":           adj_amount,
+                                        "balance_after":    new_pts,
+                                        "description":      f"管理者調整: {adj_note}",
+                                    })
+                                except Exception:
+                                    pass
+                                st.markdown(
+                                    f'<div class="success-box">'
+                                    f'✅ 残高を {cur_pts:,}pt → {new_pts:,}pt に修正しました</div>',
+                                    unsafe_allow_html=True
+                                )
+                                st.cache_data.clear()
+                            else:
+                                st.markdown('<div class="err-box">❌ 更新に失敗しました</div>', unsafe_allow_html=True)
+
+            # ── 取引履歴削除 ──────────────────────────────────────────────────
+            with adj_sub2:
+                st.markdown('<div class="section-head">取引履歴の削除</div>', unsafe_allow_html=True)
+                st.caption("取引ログを削除しても顧客の残高は自動で戻りません。残高は「残高を直接修正」タブで別途修正してください。")
+
+                # 顧客で絞り込み
+                sel_tx_cust = st.selectbox(
+                    "顧客で絞り込み",
+                    ["すべて"] + [f"{row['name']} (ID:{int(row['id'])})" for _, row in df_pts.iterrows()],
+                    key="tx_cust_filter"
+                )
+
+                rows_tx_all = sb_select("point_transactions", order="-created_at", limit=100)
+                df_tx_all   = to_df(rows_tx_all)
+
+                if df_tx_all.empty:
+                    st.markdown('<div class="info-box">取引履歴がありません</div>', unsafe_allow_html=True)
+                else:
+                    df_tx_all = df_tx_all.merge(
+                        df_pts[["id","name"]].rename(columns={"id":"user_id","name":"顧客名"}),
+                        on="user_id", how="left"
+                    )
+
+                    if sel_tx_cust != "すべて":
+                        flt_id = int(sel_tx_cust.split("ID:")[1].rstrip(")"))
+                        df_tx_all = df_tx_all[df_tx_all["user_id"] == flt_id]
+
+                    TYPE_MAP = {
+                        "earn":"🎁 付与", "spend":"💳 利用",
+                        "transfer_out":"📤 譲渡(送信)", "transfer_in":"📥 譲渡(受取)",
+                        "expire":"⏰ 期限切れ", "admin":"⚙️ 管理者調整"
+                    }
+
+                    for _, tx in df_tx_all.iterrows():
+                        tid     = int(tx["id"])
+                        t_type  = TYPE_MAP.get(tx.get("transaction_type",""), tx.get("transaction_type",""))
+                        t_amt   = int(tx.get("amount", 0))
+                        t_bal   = int(tx.get("balance_after", 0))
+                        t_desc  = str(tx.get("description",""))
+                        t_name  = str(tx.get("顧客名",""))
+                        t_date  = str(tx.get("created_at",""))[:16]
+                        amt_str = f"+{t_amt:,}pt" if t_amt >= 0 else f"{t_amt:,}pt"
+
+                        c1, c2, c3, c4, c5 = st.columns([2, 1.5, 1.5, 3, 1])
+                        with c1: st.caption(f"**{t_name}** {t_date}")
+                        with c2: st.caption(t_type)
+                        with c3: st.caption(f"{amt_str} → {t_bal:,}pt")
+                        with c4: st.caption(t_desc[:40])
+                        with c5:
+                            if st.button("削除", key=f"tx_del_{tid}"):
+                                from db import sb_delete as sb_del
+                                sb_del("point_transactions", {"id": tid})
+                                st.markdown(
+                                    '<div class="success-box">取引ログを削除しました。'
+                                    '必要に応じて顧客の残高を手動で修正してください。</div>',
+                                    unsafe_allow_html=True
+                                )
+                                st.rerun()
