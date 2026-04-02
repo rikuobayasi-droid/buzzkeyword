@@ -172,6 +172,9 @@ def get_period_purchases() -> pd.DataFrame:
         (df_p_excl_pat["date_str"] >= from_str) &
         (df_p_excl_pat["date_str"] <= to_str)
     ].copy()
+    # キャンセルを除外（tour_status = "キャンセル" の行は売上に含めない）
+    if "tour_status" in df.columns:
+        df = df[df["tour_status"] != "キャンセル"]
     if f_biz not in ("すべて","Patreon"):
         df = df[df["business"] == f_biz]
     return df
