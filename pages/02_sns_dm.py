@@ -45,13 +45,17 @@ def get_nationality(hour: int) -> list:
 def load_dm_daily() -> pd.DataFrame:
     """
     dm_daily を取得し date列を正規化する。
-    Supabaseのdate列がtext型/date型どちらでも対応。
+    dm_count カラムを明示指定（count は予約語のため select(*) では値が0になる）
     """
-    rows = sb_select("dm_daily", order="date")
+    rows = sb_select("dm_daily", order="date", columns="id,date,platform,dm_count")
     df   = to_df(rows)
     if df.empty:
         return df
     df = df.copy()
+
+    # dm_count → count にリネーム（以降のコードはcountで統一）
+    if "dm_count" in df.columns:
+        df = df.rename(columns={"dm_count": "count"})
 
     def safe_to_date_str(val):
         if val is None: return None
@@ -59,23 +63,15 @@ def load_dm_daily() -> pd.DataFrame:
 
         s = str(val).strip()
 
-        # すでに YYYY-MM-DD 形式なら即返す（最速パス）
         import re
         if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
             return s
-
-        # YYYY/MM/DD → YYYY-MM-DD
         if re.match(r"^\d{4}/\d{2}/\d{2}$", s):
             return s.replace("/", "-")
-
-        # timestamp系（"2026-03-01T..." or "2026-03-01 00:00..."）
-        # 先頭10文字を取り出す
         if len(s) >= 10:
             candidate = s[:10].replace("/", "-")
             if re.match(r"^\d{4}-\d{2}-\d{2}$", candidate):
                 return candidate
-
-        # pandas で変換（最終手段）
         try:
             return pd.to_datetime(s, utc=False).strftime("%Y-%m-%d")
         except Exception:
@@ -86,6 +82,8 @@ def load_dm_daily() -> pd.DataFrame:
 
     df["date"] = df["date"].apply(safe_to_date_str)
     df = df.dropna(subset=["date"])
+    if "count" not in df.columns:
+        df["count"] = 0
     df["count"] = pd.to_numeric(df["count"], errors="coerce").fillna(0).astype(int)
     return df.sort_values("date").reset_index(drop=True)
 
