@@ -455,7 +455,7 @@ if sel_id:
 
 else:
     st.markdown('<div class="page-title">顧客管理</div>', unsafe_allow_html=True)
-    tab_reg, tab_list, tab_analysis = st.tabs(["新規登録", "顧客一覧", "分析"])
+    tab_reg, tab_list, tab_analysis, tab_points = st.tabs(["新規登録", "顧客一覧", "分析", "ポイント管理"])
 
     with tab_reg:
         platforms = get_platforms()
@@ -496,17 +496,197 @@ else:
             st.caption(f"{len(df_show)}件")
             for _, row in df_show.iterrows():
                 rid = int(row["id"])
-                lc1,lc2,lc3,lc4,lc5 = st.columns([3,2,2,2,1])
+                pts = int(row.get("total_points", 0) or 0)
+                lc1,lc2,lc3,lc4,lc5,lc6 = st.columns([3,2,2,1.5,1.5,1])
                 with lc1:
                     if st.button(row["name"], key=f"lst_go_{rid}"):
                         st.session_state["selected_customer_id"] = rid; st.rerun()
                 with lc2: st.markdown(f"`{row.get('platform','')}`")
                 with lc3: st.caption(str(row.get("created_at",""))[:10])
-                with lc4:
-                    if row.get("contact_date"): st.caption(f"問合: {str(row.get('contact_date',''))[:10]} {str(row.get('contact_time',''))[:5]}")
+                with lc4: st.caption(f"🎯 {pts:,}pt")
                 with lc5:
+                    if row.get("contact_date"): st.caption(f"問合: {str(row.get('contact_date',''))[:10]}")
+                with lc6:
                     if st.button("削除", key=f"lst_del_{rid}"):
                         sb_delete("customers",{"id":rid}); st.rerun()
 
     with tab_analysis:
         render_analysis()
+
+    # ── ポイント管理タブ ──────────────────────────────────────────────────────
+    with tab_points:
+        st.markdown('<div class="section-head">ポイント管理（5%還元制度）</div>', unsafe_allow_html=True)
+        st.caption("購入金額の5%をポイントとして付与。RPCを通じて安全に操作します。")
+
+        # 顧客データ取得
+        df_pts = to_df(sb_select("customers", order="name"))
+        if df_pts.empty:
+            st.markdown('<div class="info-box">顧客データがありません</div>', unsafe_allow_html=True)
+            st.stop()
+
+        # total_points が存在しない場合の対応
+        if "total_points" not in df_pts.columns:
+            df_pts["total_points"] = 0
+        df_pts["total_points"] = pd.to_numeric(df_pts["total_points"], errors="coerce").fillna(0).astype(int)
+
+        pt_sub1, pt_sub2, pt_sub3 = st.tabs(["ポイント一覧", "ポイント付与", "ポイント譲渡"])
+
+        # ── ポイント一覧 ──────────────────────────────────────────────────────
+        with pt_sub1:
+            st.markdown('<div class="section-head">顧客別ポイント残高</div>', unsafe_allow_html=True)
+
+            # ポイントランキング表示
+            df_rank = df_pts[["id","name","platform","total_points"]].copy()
+            df_rank = df_rank.sort_values("total_points", ascending=False)
+            df_rank.columns = ["ID","名前","プラットフォーム","ポイント残高"]
+            st.dataframe(df_rank, use_container_width=True, hide_index=True)
+
+            # トランザクション履歴
+            st.markdown('<div class="section-head">ポイント取引履歴（直近50件）</div>', unsafe_allow_html=True)
+            rows_tx = sb_select("point_transactions", order="-created_at", limit=50)
+            df_tx   = to_df(rows_tx)
+            if not df_tx.empty:
+                # 顧客名を結合
+                df_tx = df_tx.merge(
+                    df_pts[["id","name"]].rename(columns={"id":"user_id","name":"顧客名"}),
+                    on="user_id", how="left"
+                )
+                TYPE_MAP = {
+                    "earn":         "🎁 付与",
+                    "spend":        "💳 利用",
+                    "transfer_out": "📤 譲渡（送信）",
+                    "transfer_in":  "📥 譲渡（受取）",
+                    "expire":       "⏰ 期限切れ",
+                    "admin":        "⚙️ 管理者調整",
+                }
+                df_tx["種別"] = df_tx["transaction_type"].map(TYPE_MAP).fillna(df_tx["transaction_type"])
+                df_tx["増減"] = df_tx["amount"].apply(lambda x: f"+{int(x):,}" if int(x) > 0 else f"{int(x):,}")
+                show_cols = ["顧客名","種別","増減","balance_after","description","created_at"]
+                show_cols = [c for c in show_cols if c in df_tx.columns]
+                st.dataframe(
+                    df_tx[show_cols].rename(columns={
+                        "balance_after":"取引後残高",
+                        "description":"説明",
+                        "created_at":"日時"
+                    }).head(50),
+                    use_container_width=True, hide_index=True
+                )
+            else:
+                st.markdown('<div class="info-box">取引履歴がまだありません</div>', unsafe_allow_html=True)
+
+        # ── ポイント付与 ──────────────────────────────────────────────────────
+        with pt_sub2:
+            st.markdown('<div class="section-head">購入ポイント付与（購入金額 × 5%）</div>', unsafe_allow_html=True)
+
+            customer_opts = {f"{row['name']} (ID:{row['id']}, 現在:{int(row['total_points']):,}pt)": int(row["id"])
+                             for _, row in df_pts.iterrows()}
+
+            with st.form(key="earn_form"):
+                sel_cust_earn = st.selectbox("顧客を選択", list(customer_opts.keys()), key="earn_cust")
+                earn_amount   = st.number_input("購入金額（円）", min_value=0, value=0, step=100)
+                earn_note     = st.text_input("備考（任意）")
+
+                # プレビュー計算
+                preview_pts = int(earn_amount * 0.05)
+                st.markdown(
+                    f'<div class="info-box">付与予定ポイント: <strong>{preview_pts:,}pt</strong>'
+                    f'（{earn_amount:,}円 × 5%）</div>',
+                    unsafe_allow_html=True
+                )
+
+                if st.form_submit_button("ポイントを付与する"):
+                    if earn_amount <= 0:
+                        st.markdown('<div class="err-box">購入金額を入力してください</div>', unsafe_allow_html=True)
+                    elif preview_pts <= 0:
+                        st.markdown('<div class="err-box">ポイント付与額が0以下です（最低20円以上の購入が必要）</div>', unsafe_allow_html=True)
+                    else:
+                        cid = customer_opts[sel_cust_earn]
+                        try:
+                            from db import get_client
+                            result = get_client().rpc("earn_points", {
+                                "p_customer_id":    cid,
+                                "p_purchase_amount": earn_amount,
+                                "p_description":    earn_note or None,
+                            }).execute()
+                            res_data = result.data
+                            if isinstance(res_data, list): res_data = res_data[0]
+                            if res_data and res_data.get("success"):
+                                st.markdown(
+                                    f'<div class="success-box">'
+                                    f'✅ {int(res_data["points_added"]):,}pt 付与しました &nbsp; '
+                                    f'残高: {int(res_data["balance_before"]):,}pt → '
+                                    f'<strong>{int(res_data["balance_after"]):,}pt</strong>'
+                                    f'</div>',
+                                    unsafe_allow_html=True
+                                )
+                                st.cache_data.clear()
+                            else:
+                                err = res_data.get("error","不明なエラー") if res_data else "レスポンスなし"
+                                st.markdown(f'<div class="err-box">❌ エラー: {err}</div>', unsafe_allow_html=True)
+                        except Exception as e:
+                            st.markdown(f'<div class="err-box">❌ RPC呼び出しエラー: {e}</div>', unsafe_allow_html=True)
+
+        # ── ポイント譲渡 ──────────────────────────────────────────────────────
+        with pt_sub3:
+            st.markdown('<div class="section-head">ポイント譲渡（顧客間）</div>', unsafe_allow_html=True)
+            st.caption("送信者のポイントを減算し、受信者へ加算します。残高不足の場合は失敗します。")
+
+            customer_opts_tr = {f"{row['name']} (ID:{row['id']}, 残高:{int(row['total_points']):,}pt)": int(row["id"])
+                                for _, row in df_pts.iterrows()}
+
+            with st.form(key="transfer_form"):
+                tr1, tr2 = st.columns(2)
+                with tr1:
+                    sel_sender   = st.selectbox("送信者（譲渡元）", list(customer_opts_tr.keys()), key="tr_sender")
+                with tr2:
+                    sel_receiver = st.selectbox("受信者（譲渡先）", list(customer_opts_tr.keys()), key="tr_receiver")
+
+                tr_amount = st.number_input("譲渡ポイント数", min_value=1, value=100, step=10)
+                tr_note   = st.text_input("備考（任意）")
+
+                sender_id   = customer_opts_tr[sel_sender]
+                receiver_id = customer_opts_tr[sel_receiver]
+                sender_pts  = int(df_pts[df_pts["id"] == sender_id]["total_points"].values[0])
+
+                st.markdown(
+                    f'<div class="info-box">'
+                    f'送信者残高: <strong>{sender_pts:,}pt</strong> &nbsp; '
+                    f'譲渡後残高: <strong>{max(sender_pts - tr_amount, 0):,}pt</strong>'
+                    f'{"（❌ 残高不足）" if tr_amount > sender_pts else ""}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+                if st.form_submit_button("ポイントを譲渡する"):
+                    if sender_id == receiver_id:
+                        st.markdown('<div class="err-box">送信者と受信者が同じです</div>', unsafe_allow_html=True)
+                    elif tr_amount > sender_pts:
+                        st.markdown(f'<div class="err-box">残高不足です（保有: {sender_pts:,}pt）</div>', unsafe_allow_html=True)
+                    else:
+                        try:
+                            from db import get_client
+                            result = get_client().rpc("transfer_points", {
+                                "p_sender_id":   sender_id,
+                                "p_receiver_id": receiver_id,
+                                "p_amount":      tr_amount,
+                                "p_description": tr_note or None,
+                            }).execute()
+                            res_data = result.data
+                            if isinstance(res_data, list): res_data = res_data[0]
+                            if res_data and res_data.get("success"):
+                                sender_name   = sel_sender.split(" (")[0]
+                                receiver_name = sel_receiver.split(" (")[0]
+                                st.markdown(
+                                    f'<div class="success-box">'
+                                    f'✅ {tr_amount:,}pt 譲渡完了 &nbsp; '
+                                    f'{sender_name}: <strong>{int(res_data["sender_balance"]):,}pt</strong> &nbsp; '
+                                    f'{receiver_name}: <strong>{int(res_data["receiver_balance"]):,}pt</strong>'
+                                    f'</div>',
+                                    unsafe_allow_html=True
+                                )
+                                st.cache_data.clear()
+                            else:
+                                err = res_data.get("error","不明なエラー") if res_data else "レスポンスなし"
+                                st.markdown(f'<div class="err-box">❌ エラー: {err}</div>', unsafe_allow_html=True)
+                        except Exception as e:
+                            st.markdown(f'<div class="err-box">❌ RPC呼び出しエラー: {e}</div>', unsafe_allow_html=True)
