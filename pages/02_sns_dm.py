@@ -352,6 +352,7 @@ with tab_analysis:
             st.markdown(f"**existing_daily件数:** {len(existing_daily)}件")
             if not existing_daily.empty:
                 st.markdown(f"**existing_dailyの2026-04データ件数:** {len(existing_daily[existing_daily['date'].str.startswith('2026-04')])}件")
+    sel_actual = int(df_filtered["count"].sum()) if not df_filtered.empty else 0
     sel_goal   = 0
     if search_mode == "年・月・日を選択" and sel_year != "すべて" and sel_month_num != "すべて" and not sel_day.strip():
         sel_goal = get_goal(f"{sel_year}-{sel_month_num}")
