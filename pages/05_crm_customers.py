@@ -578,55 +578,77 @@ else:
 
         # ── 一括付与（purchases履歴から自動計算）────────────────────────────
         with pt_sub2:
-            st.markdown('<div class="section-head">購入履歴からポイント一括付与</div>', unsafe_allow_html=True)
-            st.caption("purchasesテーブルのPatreon以外の購入履歴から支払い総額の5%を計算して付与します。")
+            st.markdown('<div class="section-head">料金回収済み購入履歴からポイント一括付与</div>', unsafe_allow_html=True)
+            st.caption("予約ステータスが「料金回収済み」の購入のみを対象に、支払い総額の5%を付与します。")
 
-            # purchases を取得（Patreon除外）
+            # purchases を取得
             df_pur_all = to_df(sb_select("purchases", order="-purchase_date"))
             if df_pur_all.empty:
                 st.markdown('<div class="info-box">購入データがありません</div>', unsafe_allow_html=True)
             else:
-                # Patreon以外に絞り込み
+                # フィルター条件を適用
+                # ① Patreon除外
                 if "product_type" in df_pur_all.columns:
                     df_pur_valid = df_pur_all[df_pur_all["product_type"] != "Patreon"].copy()
                 else:
                     df_pur_valid = df_pur_all.copy()
 
-                df_pur_valid["amount"] = pd.to_numeric(df_pur_valid["amount"], errors="coerce").fillna(0)
-                df_pur_valid["customer_id"] = pd.to_numeric(df_pur_valid["customer_id"], errors="coerce").dropna().astype(int)
+                # ② tour_status = "料金回収済み" のみ対象
+                # （tour_statusがNullの場合 = ツアー以外の商品は除外しない）
+                if "tour_status" in df_pur_valid.columns:
+                    # ツアー系: 料金回収済みのみ
+                    # 非ツアー系（tour_statusがNullまたは空）: そのまま含める
+                    is_tour     = df_pur_valid["tour_status"].notna() & (df_pur_valid["tour_status"] != "")
+                    is_paid     = df_pur_valid["tour_status"] == "料金回収済み"
+                    is_non_tour = ~is_tour
+                    df_pur_valid = df_pur_valid[is_paid | is_non_tour].copy()
 
-                # 顧客ごとの支払い総額を集計
+                df_pur_valid["amount"]      = pd.to_numeric(df_pur_valid["amount"],      errors="coerce").fillna(0)
+                df_pur_valid["customer_id"] = pd.to_numeric(df_pur_valid["customer_id"], errors="coerce")
+                df_pur_valid = df_pur_valid.dropna(subset=["customer_id"])
+                df_pur_valid["customer_id"] = df_pur_valid["customer_id"].astype(int)
+
+                # 顧客ごとの「料金回収済み」支払い総額を集計
                 grp = df_pur_valid.groupby("customer_id")["amount"].sum().reset_index()
                 grp.columns = ["customer_id", "total_amount"]
                 grp["points_to_grant"] = (grp["total_amount"] * 0.05).apply(lambda x: int(x))
                 grp = grp[grp["points_to_grant"] > 0]
 
-                # 顧客名を結合
+                # 顧客名・現在残高を結合
                 grp = grp.merge(
                     df_pts[["id","name","total_points"]].rename(columns={"id":"customer_id"}),
                     on="customer_id", how="left"
                 )
                 grp = grp.dropna(subset=["name"])
 
-                st.markdown(f"**対象顧客: {len(grp)}名**")
+                # ステータス別件数を表示
+                if "tour_status" in df_pur_all.columns:
+                    status_counts = df_pur_all[df_pur_all["product_type"] != "Patreon"]["tour_status"].value_counts()
+                    with st.expander("ステータス別件数を確認"):
+                        st.dataframe(status_counts.reset_index().rename(columns={"index":"ステータス","tour_status":"件数"}))
+                        paid_cnt = int((df_pur_all["tour_status"] == "料金回収済み").sum())
+                        cancel_cnt = int((df_pur_all["tour_status"] == "キャンセル").sum())
+                        st.markdown(f"**料金回収済み: {paid_cnt}件** / キャンセル: {cancel_cnt}件（除外済み）")
+
+                st.markdown(f"**対象顧客: {len(grp)}名**（料金回収済みの購入がある顧客）")
                 st.dataframe(
                     grp[["name","total_amount","points_to_grant","total_points"]].rename(columns={
                         "name":"顧客名",
-                        "total_amount":"購入総額(円)",
-                        "points_to_grant":"付与予定pt",
+                        "total_amount":"料金回収済み総額(円)",
+                        "points_to_grant":"付与予定pt（5%）",
                         "total_points":"現在残高pt"
                     }),
                     use_container_width=True, hide_index=True
                 )
 
-                st.markdown(f"**付与予定合計: {grp['points_to_grant'].sum():,}pt**")
+                st.markdown(f"**付与予定合計: {int(grp['points_to_grant'].sum()):,}pt**")
                 st.caption("⚠️ 既にポイントが付与されている顧客にも再付与されます。初回のみ実行してください。")
 
                 if st.button("一括ポイント付与を実行する", key="bulk_grant_btn"):
                     from db import get_client
                     success_count = 0
                     error_msgs    = []
-                    prog = st.progress(0)
+                    prog  = st.progress(0)
                     total = len(grp)
 
                     for i, (_, row) in enumerate(grp.iterrows()):
@@ -636,7 +658,7 @@ else:
                             result = get_client().rpc("earn_points", {
                                 "p_customer_id":     cid,
                                 "p_purchase_amount": amount,
-                                "p_description":     f"購入履歴一括付与（総額 {amount:,}円 × 5%）",
+                                "p_description":     f"購入履歴一括付与（料金回収済み総額 {amount:,}円 × 5%）",
                             }).execute()
                             res = result.data
                             if isinstance(res, list): res = res[0]
@@ -658,6 +680,7 @@ else:
                             "<br>".join(error_msgs[:5]) + "</div>",
                             unsafe_allow_html=True
                         )
+
                     st.cache_data.clear()
 
         # ── 個別付与 ──────────────────────────────────────────────────────────
