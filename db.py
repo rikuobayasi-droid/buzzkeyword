@@ -17,10 +17,12 @@ def get_client():
         _client = create_client(url, key)
     return _client
 
-def sb_select(table, filters=None, order=None, limit=None):
+def sb_select(table, filters=None, order=None, limit=None, columns="*"):
     """
     Supabaseのデフォルト上限は1000件。
     limit未指定の場合は全件取得する（ページネーション）。
+    columns: 取得するカラムを指定（デフォルト"*"）
+             例: "id,year_month,platform,hour,dm_count"
     """
     import streamlit as st
     try:
@@ -28,7 +30,7 @@ def sb_select(table, filters=None, order=None, limit=None):
 
         # limit指定あり → そのまま取得
         if limit:
-            q = client.table(table).select("*")
+            q = client.table(table).select(columns)
             if filters:
                 for col, val in filters.items():
                     q = q.eq(col, val)
@@ -43,7 +45,7 @@ def sb_select(table, filters=None, order=None, limit=None):
         page_size = 1000
         offset = 0
         while True:
-            q = client.table(table).select("*")
+            q = client.table(table).select(columns)
             if filters:
                 for col, val in filters.items():
                     q = q.eq(col, val)
@@ -54,7 +56,7 @@ def sb_select(table, filters=None, order=None, limit=None):
             rows = q.execute().data or []
             all_data.extend(rows)
             if len(rows) < page_size:
-                break  # 最後のページ
+                break
             offset += page_size
         return all_data
 
