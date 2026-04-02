@@ -589,7 +589,7 @@ else:
                 # フィルター条件を適用
                 # ① Patreon除外
                 if "product_type" in df_pur_all.columns:
-                    df_pur_valid = df_pur_all[df_pur_all["product_type"] != "Patreon"].copy()
+                    df_pur_valid = df_pur_all[~df_pur_all["product_type"].isin(["Patreon","PR"])].copy()
                 else:
                     df_pur_valid = df_pur_all.copy()
 
@@ -623,7 +623,7 @@ else:
 
                 # ステータス別件数を表示
                 if "tour_status" in df_pur_all.columns:
-                    status_counts = df_pur_all[df_pur_all["product_type"] != "Patreon"]["tour_status"].value_counts()
+                    status_counts = df_pur_all[~df_pur_all["product_type"].isin(["Patreon","PR"])]["tour_status"].value_counts()
                     with st.expander("ステータス別件数を確認"):
                         st.dataframe(status_counts.reset_index().rename(columns={"index":"ステータス","tour_status":"件数"}))
                         paid_cnt = int((df_pur_all["tour_status"] == "料金回収済み").sum())
