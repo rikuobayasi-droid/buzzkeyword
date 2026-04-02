@@ -455,7 +455,7 @@ if sel_id:
 
 else:
     st.markdown('<div class="page-title">顧客管理</div>', unsafe_allow_html=True)
-    tab_reg, tab_list, tab_analysis, tab_points = st.tabs(["新規登録", "顧客一覧", "分析", "ポイント管理"])
+    tab_reg, tab_list, tab_analysis, tab_points, tab_ng = st.tabs(["新規登録", "顧客一覧", "分析", "ポイント管理", "NGリスト"])
 
     with tab_reg:
         platforms = get_platforms()
@@ -932,3 +932,174 @@ else:
                                     unsafe_allow_html=True
                                 )
                                 st.rerun()
+
+    # ── NGリストタブ ──────────────────────────────────────────────────────────
+    with tab_ng:
+        st.markdown('<div class="page-title">キャンセルランク・NGリスト</div>', unsafe_allow_html=True)
+        st.caption("ツアー予約のキャンセル回数に応じて自動でランクを付与します。")
+
+        CANCEL_RANK_MAP = {
+            "normal": ("⚪ 正常", "#6b7280"),
+            "yellow": ("🟡 Yellow（1回キャンセル）", "#d97706"),
+            "red":    ("🔴 Red（2回キャンセル）",    "#dc2626"),
+            "black":  ("⬛ Black（3回以上・NG）",     "#111827"),
+        }
+
+        # purchases からキャンセル件数を集計
+        df_pur_ng  = to_df(sb_select("purchases", order="-purchase_date"))
+        df_cust_ng = to_df(sb_select("customers", order="name"))
+
+        if df_cust_ng.empty:
+            st.markdown('<div class="info-box">顧客データがありません</div>', unsafe_allow_html=True)
+        else:
+            # キャンセル件数を集計
+            cancel_counts = {}
+            if not df_pur_ng.empty and "tour_status" in df_pur_ng.columns:
+                cancelled = df_pur_ng[df_pur_ng["tour_status"] == "キャンセル"].copy()
+                cancelled["customer_id"] = pd.to_numeric(cancelled["customer_id"], errors="coerce")
+                cancelled = cancelled.dropna(subset=["customer_id"])
+                cancel_counts = cancelled.groupby("customer_id").size().to_dict()
+
+            def get_rank(cnt: int) -> str:
+                if cnt >= 3: return "black"
+                if cnt == 2: return "red"
+                if cnt == 1: return "yellow"
+                return "normal"
+
+            ng_sub1, ng_sub2 = st.tabs(["ランク一括更新", "NGリスト一覧"])
+
+            with ng_sub1:
+                st.markdown('<div class="section-head">キャンセルランクを一括更新</div>', unsafe_allow_html=True)
+                st.caption("purchasesの「キャンセル」件数を集計してcustomersテーブルを更新します。")
+
+                # プレビュー
+                preview_rows = []
+                for _, row in df_cust_ng.iterrows():
+                    cid  = int(row["id"])
+                    cnt  = cancel_counts.get(cid, 0)
+                    rank = get_rank(cnt)
+                    cur_rank = row.get("cancel_rank","normal") or "normal"
+                    if cnt > 0 or cur_rank != "normal":
+                        label, color = CANCEL_RANK_MAP.get(rank, ("⚪ 正常","#6b7280"))
+                        preview_rows.append({
+                            "顧客名":       row["name"],
+                            "キャンセル数": cnt,
+                            "新ランク":     label,
+                            "現在ランク":   CANCEL_RANK_MAP.get(cur_rank,("⚪ 正常","#6b7280"))[0],
+                            "_id":          cid,
+                            "_rank":        rank,
+                            "_cnt":         cnt,
+                        })
+
+                if preview_rows:
+                    df_prev = pd.DataFrame(preview_rows)
+                    st.dataframe(
+                        df_prev[["顧客名","キャンセル数","現在ランク","新ランク"]],
+                        use_container_width=True, hide_index=True
+                    )
+                else:
+                    st.markdown('<div class="info-box">キャンセル履歴のある顧客はいません</div>', unsafe_allow_html=True)
+
+                if st.button("ランクを一括更新する", key="ng_bulk_update"):
+                    updated = 0
+                    for _, row in df_cust_ng.iterrows():
+                        cid  = int(row["id"])
+                        cnt  = cancel_counts.get(cid, 0)
+                        rank = get_rank(cnt)
+                        ng_at = None
+                        if rank == "black":
+                            from datetime import datetime, timezone
+                            existing_ng = row.get("ng_listed_at")
+                            ng_at = existing_ng if existing_ng else datetime.now(timezone.utc).isoformat()
+
+                        sb_update("customers", {
+                            "cancel_count": cnt,
+                            "cancel_rank":  rank,
+                            "ng_listed_at": ng_at,
+                        }, {"id": cid})
+                        updated += 1
+
+                    st.markdown(f'<div class="success-box">✅ {updated}名のランクを更新しました</div>', unsafe_allow_html=True)
+                    st.rerun()
+
+            with ng_sub2:
+                st.markdown('<div class="section-head">NGリスト・キャンセルランク一覧</div>', unsafe_allow_html=True)
+
+                # cancel_rank カラムがある場合
+                if "cancel_rank" not in df_cust_ng.columns:
+                    st.markdown('<div class="info-box">「ランク一括更新」を先に実行してください</div>', unsafe_allow_html=True)
+                else:
+                    # ランクフィルター
+                    rank_filter = st.selectbox(
+                        "ランクで絞り込み",
+                        ["すべて", "⬛ Black（NG）", "🔴 Red", "🟡 Yellow"],
+                        key="ng_rank_filter"
+                    )
+                    filter_map = {
+                        "⬛ Black（NG）": "black",
+                        "🔴 Red":         "red",
+                        "🟡 Yellow":       "yellow",
+                    }
+
+                    df_ng_show = df_cust_ng.copy()
+                    if rank_filter != "すべて":
+                        df_ng_show = df_ng_show[df_ng_show["cancel_rank"] == filter_map[rank_filter]]
+
+                    # キャンセルありの顧客のみ表示
+                    df_ng_show = df_ng_show[df_ng_show["cancel_rank"] != "normal"].copy()
+
+                    if df_ng_show.empty:
+                        st.markdown('<div class="info-box">該当する顧客はいません</div>', unsafe_allow_html=True)
+                    else:
+                        st.caption(f"{len(df_ng_show)}名")
+                        for _, row in df_ng_show.iterrows():
+                            rank  = row.get("cancel_rank","normal") or "normal"
+                            label, color = CANCEL_RANK_MAP.get(rank, ("⚪","#6b7280"))
+                            cnt   = int(row.get("cancel_count",0) or 0)
+                            ng_at = str(row.get("ng_listed_at","") or "")[:10]
+                            cid   = int(row["id"])
+
+                            with st.expander(f"{label} {row['name']} | キャンセル{cnt}回"):
+                                ic1, ic2 = st.columns(2)
+                                with ic1:
+                                    st.markdown(f"**プラットフォーム:** {row.get('platform','')}")
+                                    st.markdown(f"**キャンセル回数:** {cnt}回")
+                                    if ng_at:
+                                        st.markdown(f"**BL登録日:** {ng_at}")
+                                with ic2:
+                                    # ランク手動変更
+                                    rank_opts  = list(CANCEL_RANK_MAP.keys())
+                                    cur_idx    = rank_opts.index(rank) if rank in rank_opts else 0
+                                    new_rank   = st.selectbox(
+                                        "ランクを手動変更",
+                                        rank_opts,
+                                        index=cur_idx,
+                                        format_func=lambda x: CANCEL_RANK_MAP[x][0],
+                                        key=f"ng_rank_{cid}"
+                                    )
+                                    if st.button("ランクを更新", key=f"ng_upd_{cid}"):
+                                        from datetime import datetime, timezone
+                                        ng_at_new = None
+                                        if new_rank == "black":
+                                            ng_at_new = row.get("ng_listed_at") or datetime.now(timezone.utc).isoformat()
+                                        sb_update("customers", {
+                                            "cancel_rank": new_rank,
+                                            "ng_listed_at": ng_at_new,
+                                        }, {"id": cid})
+                                        st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
+                                        st.rerun()
+
+                                # キャンセル購入履歴を表示
+                                if not df_pur_ng.empty:
+                                    cust_cancel = df_pur_ng[
+                                        (df_pur_ng["customer_id"].astype(str) == str(cid)) &
+                                        (df_pur_ng["tour_status"] == "キャンセル")
+                                    ]
+                                    if not cust_cancel.empty:
+                                        st.markdown("**キャンセル履歴:**")
+                                        for _, pr in cust_cancel.iterrows():
+                                            st.caption(
+                                                f"{str(pr.get('purchase_date',''))[:10]} | "
+                                                f"¥{int(pr.get('amount',0) or 0):,} | "
+                                                f"{pr.get('product_type','')}"
+                                            )
