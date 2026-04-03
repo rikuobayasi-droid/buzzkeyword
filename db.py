@@ -93,7 +93,11 @@ def sb_update(table, data, filters):
         q = get_client().table(table).update(data)
         for col, val in filters.items():
             q = q.eq(col, val)
-        q.execute()
+        result = q.execute()
+        # 更新件数が0の場合もエラーとして扱う
+        if hasattr(result, 'data') and result.data is not None and len(result.data) == 0:
+            st.warning(f"DB更新({table}): 対象レコードが見つかりませんでした")
+            return False
         return True
     except Exception as e:
         st.error(f"DB更新エラー({table}): {e}")
