@@ -53,35 +53,10 @@ def calc_patreon_daily_by_contract(df_subs: pd.DataFrame, target_date: str) -> i
     matched = df_subs[df_subs["start_date"].astype(str).str[:10] == target_date[:10]]
     return int(matched["monthly_price"].sum()) if not matched.empty else 0
 
-def calc_patreon_mrr(df_subs: pd.DataFrame, year_month: str) -> int:
-    """
-    月別: 従来通り（その月に契約中 = start_date <= 月末 かつ end_date IS NULL or >= 月初）
-    未来12ヶ月を上限とする
-    """
-    if df_subs.empty:
-        return 0
-    today        = date.today()
-    future_limit = add_months(today.replace(day=1), 12)
-    try:
-        ym_date = date(int(year_month[:4]), int(year_month[5:7]), 1)
-    except Exception:
-        return 0
-    if ym_date > future_limit:
-        return 0
-    y, m     = ym_date.year, ym_date.month
-    days     = monthrange(y, m)[1]
-    ym_start = f"{year_month}-01"
-    ym_end   = f"{year_month}-{days:02d}"
-    total    = 0
-    for _, row in df_subs.iterrows():
-        s = str(row.get("start_date","") or "")
-        e = str(row.get("end_date","")   or "")
-        p = int(row.get("monthly_price", 0) or 0)
-        if not s or s > ym_end:                                          continue
-        if e and e.lower() not in ("none","null",""):  # "null"文字列も空扱い
-            if e < ym_start: continue
-        total += p
-    return total
+def calc_patreon_mrr(df_subs, year_month: str) -> int:
+    """共通MRR計算関数のラッパー（finance_sales用）"""
+    from common import calc_patreon_mrr_common
+    return calc_patreon_mrr_common(df_subs, year_month)
 
 def calc_patreon_period(df_subs: pd.DataFrame, date_from: date, date_to: date) -> int:
     """
