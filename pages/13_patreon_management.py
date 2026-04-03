@@ -245,19 +245,25 @@ with tab_sub:
 
                     if st.form_submit_button("更新する"):
                         nb = next_billing(str(e_start))
-                        update_data = {
-                            "monthly_price":     e_price,
-                            "start_date":        str(e_start),
-                            "next_billing_date": nb,
-                            "payment_method":    e_payment,
-                            "end_date":          str(e_end) if e_end else None,
-                        }
-                        ok = sb_update("patreon_subscriptions", update_data, {"id": sid})
-                        if ok:
+                        # end_date: 契約中の場合は明示的にNULLを設定
+                        # Supabaseクライアントでは None がNULLとして送信されるが
+                        # 念のため文字列での空値も試みる
+                        end_date_val = str(e_end) if (e_status == "解約済み" and e_end) else None
+
+                        try:
+                            from db import get_client
+                            # 直接Supabase APIで更新（None=NULLを確実に送信）
+                            result = get_client().table("patreon_subscriptions").update({
+                                "monthly_price":     e_price,
+                                "start_date":        str(e_start),
+                                "next_billing_date": nb,
+                                "payment_method":    e_payment,
+                                "end_date":          end_date_val,
+                            }).eq("id", sid).execute()
                             st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
                             st.rerun()
-                        else:
-                            st.markdown('<div class="err-box">更新に失敗しました</div>', unsafe_allow_html=True)
+                        except Exception as e:
+                            st.markdown(f'<div class="err-box">更新に失敗しました: {e}</div>', unsafe_allow_html=True)
 
                 # 削除ボタン（フォーム外）
                 if st.button("🗑️ このサブスクを削除", key=f"sub_del_{sid}"):
