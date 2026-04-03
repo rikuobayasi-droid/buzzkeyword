@@ -177,3 +177,79 @@ def coming_soon_page(title):
     setup_sidebar()
     st.markdown(f'<div class="page-title">{title}</div>', unsafe_allow_html=True)
     st.markdown('<div class="coming-soon"><div style="font-size:1rem;color:#6b7280;font-weight:600;margin-bottom:.5rem;">COMING SOON</div><div style="font-size:.82rem;color:#9ca3af;line-height:1.9;">この機能は現在開発中です。<br>次のアップデートで実装予定です。</div></div>', unsafe_allow_html=True)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 共通MRR計算関数（patreon_management / finance_sales 共用）
+#
+# ロジック:
+#   以下をすべて満たすサブスクをカウント
+#   1. start_date <= 対象月末日
+#   2. cancel_date が NULL/空 OR cancel_date が対象月内（解約月はカウント）
+#      → cancel_dateの翌月以降はカウントしない
+#   例: cancel_date=2026-03-15 → 2026-03まで含む、2026-04から除外
+# ════════════════════════════════════════════════════════════════════════
+from calendar import monthrange as _monthrange
+from datetime import date as _date
+
+def _safe_date_str(val) -> str:
+    """任意の値をYYYY-MM-DD文字列に変換。NULLや無効値は空文字を返す"""
+    if val is None: return ""
+    try:
+        import pandas as _pd
+        if _pd.isna(val): return ""
+    except Exception:
+        pass
+    s = str(val).strip().lower()
+    if s in ("", "none", "null", "nat", "nan"): return ""
+    return str(val)[:10]
+
+def calc_patreon_mrr_common(df_subs, year_month: str) -> int:
+    """
+    指定月のPatreon MRRを計算する共通関数。
+    
+    Parameters:
+        df_subs: patreon_subscriptionsのDataFrame
+        year_month: "YYYY-MM" 形式の対象月
+    
+    Returns:
+        int: 対象月のMRR合計（円）
+    """
+    import pandas as _pd
+    if df_subs is None or (hasattr(df_subs, 'empty') and df_subs.empty):
+        return 0
+    try:
+        y, m    = int(year_month[:4]), int(year_month[5:7])
+        m_start = f"{year_month}-01"
+        m_end   = f"{year_month}-{_monthrange(y, m)[1]:02d}"
+    except Exception:
+        return 0
+
+    total = 0
+    for _, row in df_subs.iterrows():
+        # 開始日チェック
+        s = _safe_date_str(row.get("start_date"))
+        if not s or s > m_end:
+            continue  # 開始日が対象月末より後 → 除外
+
+        # 解約日チェック（cancel_date 優先、なければ end_date を参照）
+        cancel = _safe_date_str(row.get("cancel_date")) or _safe_date_str(row.get("end_date"))
+        if cancel:
+            try:
+                cd = _date.fromisoformat(cancel)
+                # 解約月の翌月1日を計算
+                next_month_year = cd.year + (1 if cd.month == 12 else 0)
+                next_month_m    = cd.month % 12 + 1
+                next_month_start = f"{next_month_year}-{next_month_m:02d}-01"
+                # 対象月の開始日が解約翌月以降なら除外
+                if m_start >= next_month_start:
+                    continue
+            except Exception:
+                pass
+
+        try:
+            total += int(row.get("monthly_price", 0) or 0)
+        except Exception:
+            pass
+
+    return total
