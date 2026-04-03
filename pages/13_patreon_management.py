@@ -231,9 +231,13 @@ with tab_sub:
                             key=f"e_status_{sid}"
                         )
                         if e_status == "解約済み":
+                            try:
+                                end_default = date.fromisoformat(str(end_val)[:10]) if end_val and str(end_val) not in ("None","null","") else date.today()
+                            except Exception:
+                                end_default = date.today()
                             e_end = st.date_input(
                                 "解約日",
-                                value=date.fromisoformat(str(end_val)[:10]) if end_val and str(end_val) not in ("None","null","") else date.today(),
+                                value=end_default,
                                 key=f"e_end_{sid}"
                             )
                         else:
