@@ -143,7 +143,6 @@ with tab_sub:
             df_subs["cust_name"] = "不明"
 
         # ステータス判定: end_date IS NULL → 契約中
-        # DBから "null" 文字列で返ってくる場合も契約中として扱う
         def is_active(x):
             if x is None: return True
             s = str(x).strip().lower()
@@ -171,8 +170,10 @@ with tab_sub:
             sid     = int(row["id"])
             status  = row["status"]
             s_color = "#15803d" if status == "契約中" else "#9ca3af"
+            end_val = row.get("end_date")
 
             with st.expander(
+                f"{'🟢' if status == '契約中' else '⚫'} "
                 f"{row.get('cust_name','')}  {row.get('plan_name','')}  "
                 f"¥{int(row.get('monthly_price',0)):,}/月  "
                 f"[{status}]"
@@ -190,26 +191,72 @@ with tab_sub:
                         f"**ステータス:** <span style='color:{s_color};font-weight:600;'>{status}</span>",
                         unsafe_allow_html=True
                     )
-                    if row.get("end_date"):
-                        st.markdown(f"**解約日:** {row.get('end_date','')}")
+                    if end_val and str(end_val) not in ("None","null",""):
+                        st.markdown(f"**解約日:** {end_val}")
+                    else:
+                        st.markdown("**解約日:** 未設定（契約中）")
 
-                # 解約処理
-                if status == "契約中":
-                    end_d = st.date_input("解約日を設定", value=date.today(), key=f"end_{sid}")
-                    if st.button("解約する", key=f"cancel_{sid}"):
-                        sb_update("patreon_subscriptions", {"end_date": str(end_d)}, {"id": sid})
-                        st.rerun()
-                else:
-                    if st.button("契約を再開する", key=f"reopen_{sid}"):
-                        nb = next_billing(str(date.today()))
-                        sb_update("patreon_subscriptions", {
-                            "end_date":          None,
-                            "start_date":        str(date.today()),
+                st.markdown("---")
+
+                # 編集フォーム
+                with st.form(key=f"edit_sub_{sid}"):
+                    st.markdown("**サブスク情報を編集**")
+                    ef1, ef2 = st.columns(2)
+                    with ef1:
+                        e_price = st.number_input(
+                            "月額（¥）",
+                            min_value=0,
+                            value=int(row.get("monthly_price", 0) or 0),
+                            step=100,
+                            key=f"e_price_{sid}"
+                        )
+                        e_start = st.date_input(
+                            "開始日",
+                            value=date.fromisoformat(str(row.get("start_date",""))[:10]) if row.get("start_date") else date.today(),
+                            key=f"e_start_{sid}"
+                        )
+                    with ef2:
+                        e_payment = st.selectbox(
+                            "支払方法",
+                            ["クレジットカード","PayPal","銀行振込","その他"],
+                            index=["クレジットカード","PayPal","銀行振込","その他"].index(row.get("payment_method","クレジットカード")) if row.get("payment_method") in ["クレジットカード","PayPal","銀行振込","その他"] else 0,
+                            key=f"e_pay_{sid}"
+                        )
+                        # ステータス手動設定（解約済みを契約中に戻す場合）
+                        e_status = st.radio(
+                            "ステータス",
+                            ["契約中", "解約済み"],
+                            index=0 if status == "契約中" else 1,
+                            horizontal=True,
+                            key=f"e_status_{sid}"
+                        )
+                        if e_status == "解約済み":
+                            e_end = st.date_input(
+                                "解約日",
+                                value=date.fromisoformat(str(end_val)[:10]) if end_val and str(end_val) not in ("None","null","") else date.today(),
+                                key=f"e_end_{sid}"
+                            )
+                        else:
+                            e_end = None
+
+                    if st.form_submit_button("更新する"):
+                        nb = next_billing(str(e_start))
+                        update_data = {
+                            "monthly_price":     e_price,
+                            "start_date":        str(e_start),
                             "next_billing_date": nb,
-                        }, {"id": sid})
-                        st.rerun()
+                            "payment_method":    e_payment,
+                            "end_date":          str(e_end) if e_end else None,
+                        }
+                        ok = sb_update("patreon_subscriptions", update_data, {"id": sid})
+                        if ok:
+                            st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
+                            st.rerun()
+                        else:
+                            st.markdown('<div class="err-box">更新に失敗しました</div>', unsafe_allow_html=True)
 
-                if st.button("削除", key=f"sub_del_{sid}"):
+                # 削除ボタン（フォーム外）
+                if st.button("🗑️ このサブスクを削除", key=f"sub_del_{sid}"):
                     sb_delete("patreon_subscriptions", {"id": sid})
                     st.rerun()
 
