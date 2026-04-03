@@ -143,8 +143,14 @@ with tab_sub:
             df_subs["cust_name"] = "不明"
 
         # ステータス判定: end_date IS NULL → 契約中
+        # DBから "null" 文字列で返ってくる場合も契約中として扱う
+        def is_active(x):
+            if x is None: return True
+            s = str(x).strip().lower()
+            return s in ("", "none", "null")
+
         df_subs["status"] = df_subs["end_date"].apply(
-            lambda x: "契約中" if (x is None or str(x) == "" or str(x) == "None") else "解約済み"
+            lambda x: "契約中" if is_active(x) else "解約済み"
         )
 
         # フィルター
@@ -305,7 +311,7 @@ with tab_mrr:
         st.markdown('<div class="section-head">現在月のプラン別内訳</div>', unsafe_allow_html=True)
         active_subs = df_subs[
             (df_subs["start_date"] <= today.strftime("%Y-%m-%d")) &
-            (df_subs["end_date"].isna() | (df_subs["end_date"] == "") | (df_subs["end_date"] == "None"))
+            (df_subs["end_date"].isna() | df_subs["end_date"].isin(["", "None", "null"]))
         ]
         if not active_subs.empty:
             plan_breakdown = active_subs.groupby("plan_name").agg(
