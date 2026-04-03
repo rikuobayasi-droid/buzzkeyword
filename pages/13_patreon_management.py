@@ -214,18 +214,34 @@ with tab_sub:
                             ) if row.get("payment_method") in ["クレジットカード","PayPal","銀行振込","その他"] else 0,
                             key=f"epy_{sid}")
                     with ef2:
-                        e_status = st.radio("ステータス", ["契約中","解約済み"],
-                            index=0 if status == "契約中" else 1,
-                            horizontal=True, key=f"est_{sid}")
-                        if e_status == "解約済み":
+                        e_pay   = st.selectbox("支払方法",
+                            ["クレジットカード","PayPal","銀行振込","その他"],
+                            index=["クレジットカード","PayPal","銀行振込","その他"].index(
+                                row.get("payment_method","クレジットカード")
+                            ) if row.get("payment_method") in ["クレジットカード","PayPal","銀行振込","その他"] else 0,
+                            key=f"epy_{sid}")
+
+                        # 解約日（任意）— 入力するとMRRに自動反映
+                        st.markdown("**解約日（任意）**")
+                        st.caption("入力するとその日以降MRRから除外されます。空欄にすると契約中に戻ります。")
+
+                        use_end = st.checkbox(
+                            "解約日を設定する",
+                            value=not is_active(end_val),
+                            key=f"use_end_{sid}"
+                        )
+                        if use_end:
                             try:
                                 e_end_default = date.fromisoformat(str(end_val)[:10]) if not is_active(end_val) else date.today()
                             except Exception:
                                 e_end_default = date.today()
                             e_end = st.date_input("解約日", value=e_end_default, key=f"ee_{sid}")
                             end_date_save = str(e_end)
+                            # 解約日が今日以前なら解約済み、未来なら契約中（予告解約）
+                            auto_status = "解約済み" if e_end <= date.today() else "契約中（解約予定）"
+                            st.caption(f"ステータス: **{auto_status}**")
                         else:
-                            end_date_save = None  # 契約中 → NULLを明示
+                            end_date_save = None  # 解約日なし → 契約中
 
                     if st.form_submit_button("更新する"):
                         try:
