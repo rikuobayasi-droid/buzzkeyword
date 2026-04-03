@@ -146,13 +146,17 @@ with tab_sub:
                 plan_row   = df_plans[df_plans["plan_name"] == sel_plan] if not df_plans.empty else pd.DataFrame()
                 def_price  = int(plan_row.iloc[0]["price"]) if not plan_row.empty else 750
                 monthly_price = st.number_input("月額（¥）", min_value=0, value=def_price, step=100)
-                cancel_date_new = st.date_input("解約日（任意）", value=None, key="new_cancel")
                 sub_note   = st.text_input("備考")
+                # 解約済みチェックボックス（新規登録時は通常OFFで運用）
+                is_cancelled_new = st.checkbox("解約済み", value=False, key="new_cancelled")
+                cancel_date_new  = None
+                if is_cancelled_new:
+                    cancel_date_new = st.date_input("解約日", value=date.today(), key="new_cancel_date")
 
             if st.form_submit_button("登録する"):
                 cust_id  = int(df_custs[df_custs["name"] == sel_cust]["id"].values[0])
                 plan_id  = int(plan_row.iloc[0]["id"]) if not plan_row.empty else None
-                cancel_v = str(cancel_date_new) if cancel_date_new else None
+                cancel_v = str(cancel_date_new) if (is_cancelled_new and cancel_date_new) else None
                 res = sb_insert("patreon_subscriptions", {
                     "customer_id":       cust_id,
                     "plan_id":           plan_id,
@@ -262,25 +266,31 @@ with tab_sub:
                                   if row.get("payment_method") in PAYMENT_METHODS else 0,
                             key=f"epy_{sid}_{i}")
                     with ef2:
-                        # 解約日（任意）
-                        st.markdown("**解約日（任意）**")
-                        st.caption("入力した翌月からMRRに含まれなくなります")
-                        use_cancel = st.checkbox("解約日を設定する",
-                            value=bool(c_date), key=f"uc_{sid}_{i}")
-                        if use_cancel:
+                        # 解約済みチェックボックス
+                        is_cancelled = st.checkbox(
+                            "解約済み",
+                            value=bool(c_date),
+                            key=f"cancel_{sid}_{i}"
+                        )
+                        if is_cancelled:
+                            # チェックON: 解約日入力欄を表示
                             try:
                                 c_def = date.fromisoformat(c_date) if c_date else date.today()
                             except Exception:
                                 c_def = date.today()
-                            e_cancel = st.date_input("解約日", value=c_def, key=f"ec_{sid}_{i}")
+                            e_cancel = st.date_input(
+                                "解約日",
+                                value=c_def,
+                                key=f"cancel_date_{sid}_{i}"
+                            )
                             cancel_save = str(e_cancel)
-                            # MRR除外開始月を表示
                             try:
                                 excl_from = add_months(e_cancel, 1).strftime("%Y-%m")
                                 st.caption(f"⚠️ {excl_from} 以降 MRR から除外")
                             except Exception:
                                 pass
                         else:
+                            # チェックOFF: NULL（契約中に戻す）
                             cancel_save = None
 
                     if st.form_submit_button("更新する", key=f"upd_{sid}_{i}"):
