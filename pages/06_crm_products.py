@@ -226,7 +226,7 @@ with tab_detail:
                 new_duration = st.number_input("所要時間（分）",   value=int(prod_row.get("duration",0) or 0), step=30,  key=f"det_gen_dur_{pid}")
 
         if st.button("更新する", key=f"det_submit_{pid}"):
-            sb_update("products", {
+            ok = sb_update("products", {
                 "name":        new_name,
                 "category":    new_category,
                 "price":       new_price,
@@ -237,8 +237,12 @@ with tab_detail:
                 "gb_name":     new_gb,
                 "note":        new_note,
             }, {"id": pid})
-            st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
-            st.rerun()
+            if ok:
+                st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.markdown('<div class="err-box">更新に失敗しました。再度お試しください。</div>', unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════
 # タブ4: カテゴリー管理
