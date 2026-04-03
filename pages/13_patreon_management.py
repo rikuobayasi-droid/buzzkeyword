@@ -1,272 +1,248 @@
 """
-pages/13_patreon_management.py — Patreonサブスク管理（修正6）
-URL: /patreon_management
+pages/13_patreon_management.py — Patreon管理（完全書き直し版）
 
-- purchasesと完全分離
-- プランマスタから選択
-- MRR（月次売上）計算
-- ステータス: end_date IS NULL → 契約中 / NOT NULL → 解約済み
+ステータス判定:
+  end_date が NULL / None / NaT / "" / "null" / "None" → 契約中
+  それ以外（日付文字列）→ 解約済み
 """
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
-from dateutil.relativedelta import relativedelta
+from calendar import monthrange
 from common import inject_css, setup_sidebar, to_df
-from db import sb_select, sb_insert, sb_update, sb_delete
+from db import sb_select, sb_insert, sb_update, sb_delete, get_client
 
 st.set_page_config(page_title="Patreon管理 | Tabibiyori", page_icon=None, layout="wide")
 inject_css()
 setup_sidebar()
-st.markdown('<div class="page-title">Patreon サブスク管理</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-title">Patreon管理</div>', unsafe_allow_html=True)
 
-# ── MRR計算ロジック ──────────────────────────────────────────────────────────
-def calc_mrr(df_subs: pd.DataFrame, target_month: str) -> int:
-    """
-    target_month: 'YYYY-MM' 形式
-    ロジック:
-      - start_date <= target_month の末日
-      - end_date IS NULL または end_date >= target_month の初日
-    → 上記を満たすサブスクの monthly_price を合計
-    """
+# ── ヘルパー ──────────────────────────────────────────────────────────────────
+def next_billing(start_str: str) -> str:
+    try:
+        d = date.fromisoformat(str(start_str)[:10])
+        if d.month == 12:
+            return str(d.replace(year=d.year+1, month=1))
+        return str(d.replace(month=d.month+1))
+    except Exception:
+        return str(date.today() + timedelta(days=30))
+
+def is_active(end_date_val) -> bool:
+    """end_date が NULL/空 → 契約中（True）"""
+    if end_date_val is None:
+        return True
+    try:
+        if pd.isna(end_date_val):
+            return True
+    except Exception:
+        pass
+    s = str(end_date_val).strip().lower()
+    return s in ("", "none", "null", "nat", "nan")
+
+def calc_mrr(df_subs: pd.DataFrame, year_month: str) -> int:
+    """指定月に契約中のサブスクのMRRを計算"""
     if df_subs.empty:
         return 0
+    try:
+        y, m  = int(year_month[:4]), int(year_month[5:7])
+        m_end = f"{year_month}-{monthrange(y,m)[1]:02d}"
+        m_start = f"{year_month}-01"
+    except Exception:
+        return 0
     total = 0
-    ym_start = f"{target_month}-01"
-    # 月末を計算（翌月1日 - 1日）
-    y, m  = int(target_month[:4]), int(target_month[5:7])
-    if m == 12:
-        ym_end = f"{y+1}-01-01"
-    else:
-        ym_end = f"{y}-{m+1:02d}-01"
-
     for _, row in df_subs.iterrows():
-        s_date  = str(row.get("start_date","") or "")
-        e_date  = str(row.get("end_date","") or "")
-        price   = int(row.get("monthly_price",0) or 0)
-        if not s_date:
+        s = str(row.get("start_date","") or "")[:10]
+        e = row.get("end_date")
+        e_str = "" if is_active(e) else str(e)[:10]
+        if not s or s > m_end:
             continue
-        # start_date が対象月末以前
-        if s_date > ym_end:
+        if e_str and e_str < m_start:
             continue
-        # end_date が NULL か、対象月初日以降
-        if e_date and e_date < ym_start:
-            continue
-        total += price
+        try:
+            total += int(row.get("monthly_price", 0) or 0)
+        except Exception:
+            pass
     return total
 
-def next_billing(start_date_str: str) -> str:
-    """start_date + 1ヶ月 を返す"""
-    try:
-        d = date.fromisoformat(start_date_str[:10])
-        d = d + relativedelta(months=1)
-        return str(d)
-    except Exception:
-        return ""
+# ── データ取得 ────────────────────────────────────────────────────────────────
+def load_data():
+    df_subs  = to_df(sb_select("patreon_subscriptions", order="-start_date"))
+    df_custs = to_df(sb_select("customers", order="name"))
+    df_plans = to_df(sb_select("patreon_plans", order="name"))
+    return df_subs, df_custs, df_plans
 
-# ── プランマスタ取得 ──────────────────────────────────────────────────────────
-def get_plans() -> pd.DataFrame:
-    rows = sb_select("patreon_plans", order="price")
-    return to_df(rows)
-
-tab_sub, tab_plan, tab_mrr = st.tabs(["サブスク管理", "プランマスタ", "MRR（月次売上）"])
+tab_sub, tab_plan, tab_mrr = st.tabs(["サブスク管理", "プランマスタ", "MRR分析"])
 
 # ════════════════════════════════════════════════════════
 # タブ1: サブスク管理
 # ════════════════════════════════════════════════════════
 with tab_sub:
-    # 顧客一覧・プラン一覧取得
-    rows_c   = sb_select("customers", order="name")
-    df_c     = to_df(rows_c)
-    df_plans = get_plans()
+    df_subs, df_custs, df_plans = load_data()
 
-    if df_c.empty:
-        st.markdown('<div class="info-box">顧客データがありません。顧客管理ページから先に登録してください。</div>', unsafe_allow_html=True)
-    elif df_plans.empty:
-        st.markdown('<div class="info-box">プランマスタがありません。「プランマスタ」タブから先に登録してください。</div>', unsafe_allow_html=True)
+    # ── 新規登録 ──────────────────────────────────────────────────────────────
+    st.markdown('<div class="section-head">新規サブスク登録</div>', unsafe_allow_html=True)
+
+    if df_custs.empty:
+        st.markdown('<div class="info-box">顧客データがありません</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div class="section-head">サブスクを登録</div>', unsafe_allow_html=True)
+        plan_names    = df_plans["name"].tolist() if not df_plans.empty else ["Basic ($5)"]
+        customer_names = df_custs["name"].tolist()
 
-        with st.form("sub_form"):
-            sc1, sc2 = st.columns(2)
-            with sc1:
-                sel_cust    = st.selectbox("顧客", df_c["name"].tolist(), key="sub_cust")
-                plan_names  = df_plans["plan_name"].tolist()
-                sel_plan    = st.selectbox("プラン", plan_names, key="sub_plan")
-                start_date  = st.date_input("開始日", value=date.today(), key="sub_start")
-            with sc2:
-                # プランの価格を自動表示
-                plan_row    = df_plans[df_plans["plan_name"] == sel_plan]
-                default_price = int(plan_row.iloc[0]["price"]) if not plan_row.empty else 0
-                monthly_price = st.number_input("月額（¥）", min_value=0, value=default_price, step=100, key="sub_price")
-                payment_method = st.selectbox("支払方法", ["クレジットカード","PayPal","銀行振込","その他"], key="sub_pay")
-                sub_note = st.text_input("備考", key="sub_note")
+        with st.form(key="new_sub_form"):
+            nc1, nc2 = st.columns(2)
+            with nc1:
+                sel_cust   = st.selectbox("顧客を選択 *", customer_names)
+                start_date = st.date_input("開始日", value=date.today())
+                payment_method = st.selectbox("支払方法", ["クレジットカード","PayPal","銀行振込","その他"])
+            with nc2:
+                sel_plan = st.selectbox("プランを選択 *", plan_names)
+                plan_row = df_plans[df_plans["name"] == sel_plan] if not df_plans.empty else pd.DataFrame()
+                default_price = int(plan_row.iloc[0]["price"]) if not plan_row.empty and "price" in plan_row.columns else 750
+                monthly_price = st.number_input("月額（¥）", min_value=0, value=default_price, step=100)
+                sub_note = st.text_input("備考")
 
-            submitted = st.form_submit_button("登録する")
-            if submitted:
-                cust_id = int(df_c[df_c["name"] == sel_cust]["id"].values[0])
+            if st.form_submit_button("登録する"):
+                cust_id = int(df_custs[df_custs["name"] == sel_cust]["id"].values[0])
                 plan_id = int(plan_row.iloc[0]["id"]) if not plan_row.empty else None
-                next_b  = next_billing(str(start_date))
                 res = sb_insert("patreon_subscriptions", {
                     "customer_id":       cust_id,
                     "plan_id":           plan_id,
                     "plan_name":         sel_plan,
                     "monthly_price":     monthly_price,
                     "start_date":        str(start_date),
-                    "next_billing_date": next_b,
+                    "next_billing_date": next_billing(str(start_date)),
                     "end_date":          None,
                     "payment_method":    payment_method,
-                    "note":              sub_note,
+                    "note":              sub_note or None,
                 })
                 if res:
-                    st.success("登録しました")
+                    st.markdown('<div class="success-box">登録しました</div>', unsafe_allow_html=True)
                     st.rerun()
                 else:
-                    st.error("登録に失敗しました")
+                    st.markdown('<div class="err-box">登録に失敗しました</div>', unsafe_allow_html=True)
 
-    # サブスク一覧
+    # ── サブスク一覧 ──────────────────────────────────────────────────────────
     st.markdown('<div class="section-head">サブスク一覧</div>', unsafe_allow_html=True)
-    rows_s  = sb_select("patreon_subscriptions", order="-start_date")
-    df_subs = to_df(rows_s)
+
+    # 毎回最新データを取得
+    df_subs, df_custs, df_plans = load_data()
 
     if df_subs.empty:
         st.markdown('<div class="info-box">サブスクデータがありません</div>', unsafe_allow_html=True)
     else:
         # 顧客名を結合
-        rows_c  = sb_select("customers", order="name")
-        df_c    = to_df(rows_c)
-        if not df_c.empty:
+        if not df_custs.empty:
             df_subs = df_subs.merge(
-                df_c[["id","name"]].rename(columns={"id":"customer_id","name":"cust_name"}),
+                df_custs[["id","name"]].rename(columns={"id":"customer_id","name":"cust_name"}),
                 on="customer_id", how="left"
             )
         else:
             df_subs["cust_name"] = "不明"
 
-        # ステータス判定: end_date IS NULL → 契約中
-        def is_active(x):
-            if x is None: return True
-            s = str(x).strip().lower()
-            return s in ("", "none", "null")
-
+        # ステータス判定（is_active関数を使用）
         df_subs["status"] = df_subs["end_date"].apply(
             lambda x: "契約中" if is_active(x) else "解約済み"
         )
 
-        # フィルター
-        f_status = st.radio("表示", ["すべて","契約中のみ","解約済みのみ"], horizontal=True)
-        df_show  = df_subs.copy()
-        if f_status == "契約中のみ":   df_show = df_show[df_show["status"] == "契約中"]
-        elif f_status == "解約済みのみ": df_show = df_show[df_show["status"] == "解約済み"]
-
-        active_count = len(df_subs[df_subs["status"] == "契約中"])
-        active_mrr   = int(df_subs[df_subs["status"] == "契約中"]["monthly_price"].sum())
+        # メトリクス
+        active_df    = df_subs[df_subs["status"] == "契約中"]
+        active_count = len(active_df)
+        active_mrr   = int(active_df["monthly_price"].fillna(0).sum())
         st.markdown(f"""<div class="metric-row">
           <div class="metric-card"><div class="val">{active_count}</div><div class="lbl">契約中</div></div>
           <div class="metric-card"><div class="val">¥{active_mrr:,}</div><div class="lbl">現在MRR</div></div>
-          <div class="metric-card"><div class="val">{len(df_subs)}</div><div class="lbl">総契約数</div></div>
+          <div class="metric-card"><div class="val">{len(df_subs)}</div><div class="lbl">総件数</div></div>
         </div>""", unsafe_allow_html=True)
 
+        # フィルター
+        f_status = st.radio("表示", ["すべて","契約中のみ","解約済みのみ"], horizontal=True, key="sub_filter")
+        if f_status == "契約中のみ":
+            df_show = df_subs[df_subs["status"] == "契約中"].copy()
+        elif f_status == "解約済みのみ":
+            df_show = df_subs[df_subs["status"] == "解約済み"].copy()
+        else:
+            df_show = df_subs.copy()
+
+        st.caption(f"{len(df_show)}件")
+
+        # 一覧表示
         for _, row in df_show.iterrows():
             sid     = int(row["id"])
             status  = row["status"]
             s_color = "#15803d" if status == "契約中" else "#9ca3af"
+            icon    = "🟢" if status == "契約中" else "⚫"
             end_val = row.get("end_date")
 
             with st.expander(
-                f"{'🟢' if status == '契約中' else '⚫'} "
-                f"{row.get('cust_name','')}  {row.get('plan_name','')}  "
-                f"¥{int(row.get('monthly_price',0)):,}/月  "
-                f"[{status}]"
+                f"{icon} {row.get('cust_name','')} | {row.get('plan_name','')} | "
+                f"¥{int(row.get('monthly_price',0) or 0):,}/月 | {status}"
             ):
-                ec1, ec2 = st.columns(2)
-                with ec1:
+                # 情報表示
+                ic1, ic2 = st.columns(2)
+                with ic1:
                     st.markdown(f"**顧客:** {row.get('cust_name','')}")
                     st.markdown(f"**プラン:** {row.get('plan_name','')}")
-                    st.markdown(f"**月額:** ¥{int(row.get('monthly_price',0)):,}")
+                    st.markdown(f"**月額:** ¥{int(row.get('monthly_price',0) or 0):,}")
                     st.markdown(f"**支払方法:** {row.get('payment_method','')}")
-                with ec2:
-                    st.markdown(f"**開始日:** {row.get('start_date','')}")
-                    st.markdown(f"**次回請求日:** {row.get('next_billing_date','')}")
+                with ic2:
+                    st.markdown(f"**開始日:** {str(row.get('start_date',''))[:10]}")
+                    st.markdown(f"**次回請求日:** {str(row.get('next_billing_date',''))[:10]}")
                     st.markdown(
-                        f"**ステータス:** <span style='color:{s_color};font-weight:600;'>{status}</span>",
+                        f"**ステータス:** <span style='color:{s_color};font-weight:700;'>{status}</span>",
                         unsafe_allow_html=True
                     )
-                    if end_val and str(end_val) not in ("None","null",""):
-                        st.markdown(f"**解約日:** {end_val}")
-                    else:
-                        st.markdown("**解約日:** 未設定（契約中）")
+                    if not is_active(end_val):
+                        st.markdown(f"**解約日:** {str(end_val)[:10]}")
 
                 st.markdown("---")
 
                 # 編集フォーム
-                with st.form(key=f"edit_sub_{sid}"):
-                    st.markdown("**サブスク情報を編集**")
+                with st.form(key=f"edit_{sid}"):
                     ef1, ef2 = st.columns(2)
                     with ef1:
-                        e_price = st.number_input(
-                            "月額（¥）",
-                            min_value=0,
-                            value=int(row.get("monthly_price", 0) or 0),
-                            step=100,
-                            key=f"e_price_{sid}"
-                        )
-                        e_start = st.date_input(
-                            "開始日",
-                            value=date.fromisoformat(str(row.get("start_date",""))[:10]) if row.get("start_date") else date.today(),
-                            key=f"e_start_{sid}"
-                        )
-                    with ef2:
-                        e_payment = st.selectbox(
-                            "支払方法",
+                        e_price = st.number_input("月額（¥）", min_value=0,
+                            value=int(row.get("monthly_price",0) or 0), step=100, key=f"ep_{sid}")
+                        try:
+                            s_default = date.fromisoformat(str(row.get("start_date",""))[:10])
+                        except Exception:
+                            s_default = date.today()
+                        e_start = st.date_input("開始日", value=s_default, key=f"es_{sid}")
+                        e_pay   = st.selectbox("支払方法",
                             ["クレジットカード","PayPal","銀行振込","その他"],
-                            index=["クレジットカード","PayPal","銀行振込","その他"].index(row.get("payment_method","クレジットカード")) if row.get("payment_method") in ["クレジットカード","PayPal","銀行振込","その他"] else 0,
-                            key=f"e_pay_{sid}"
-                        )
-                        # ステータス手動設定（解約済みを契約中に戻す場合）
-                        e_status = st.radio(
-                            "ステータス",
-                            ["契約中", "解約済み"],
+                            index=["クレジットカード","PayPal","銀行振込","その他"].index(
+                                row.get("payment_method","クレジットカード")
+                            ) if row.get("payment_method") in ["クレジットカード","PayPal","銀行振込","その他"] else 0,
+                            key=f"epy_{sid}")
+                    with ef2:
+                        e_status = st.radio("ステータス", ["契約中","解約済み"],
                             index=0 if status == "契約中" else 1,
-                            horizontal=True,
-                            key=f"e_status_{sid}"
-                        )
+                            horizontal=True, key=f"est_{sid}")
                         if e_status == "解約済み":
                             try:
-                                end_default = date.fromisoformat(str(end_val)[:10]) if end_val and str(end_val) not in ("None","null","") else date.today()
+                                e_end_default = date.fromisoformat(str(end_val)[:10]) if not is_active(end_val) else date.today()
                             except Exception:
-                                end_default = date.today()
-                            e_end = st.date_input(
-                                "解約日",
-                                value=end_default,
-                                key=f"e_end_{sid}"
-                            )
+                                e_end_default = date.today()
+                            e_end = st.date_input("解約日", value=e_end_default, key=f"ee_{sid}")
+                            end_date_save = str(e_end)
                         else:
-                            e_end = None
+                            end_date_save = None  # 契約中 → NULLを明示
 
                     if st.form_submit_button("更新する"):
-                        nb = next_billing(str(e_start))
-                        # end_date: 契約中の場合は明示的にNULLを設定
-                        # Supabaseクライアントでは None がNULLとして送信されるが
-                        # 念のため文字列での空値も試みる
-                        end_date_val = str(e_end) if (e_status == "解約済み" and e_end) else None
-
                         try:
-                            from db import get_client
-                            # 直接Supabase APIで更新（None=NULLを確実に送信）
-                            result = get_client().table("patreon_subscriptions").update({
+                            get_client().table("patreon_subscriptions").update({
                                 "monthly_price":     e_price,
                                 "start_date":        str(e_start),
-                                "next_billing_date": nb,
-                                "payment_method":    e_payment,
-                                "end_date":          end_date_val,
+                                "next_billing_date": next_billing(str(e_start)),
+                                "payment_method":    e_pay,
+                                "end_date":          end_date_save,
                             }).eq("id", sid).execute()
-                            st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="success-box">✅ 更新しました</div>', unsafe_allow_html=True)
                             st.rerun()
                         except Exception as e:
-                            st.markdown(f'<div class="err-box">更新に失敗しました: {e}</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="err-box">❌ 更新失敗: {e}</div>', unsafe_allow_html=True)
 
-                # 削除ボタン（フォーム外）
-                if st.button("🗑️ このサブスクを削除", key=f"sub_del_{sid}"):
+                # 削除
+                if st.button("🗑️ 削除", key=f"del_{sid}"):
                     sb_delete("patreon_subscriptions", {"id": sid})
                     st.rerun()
 
@@ -275,105 +251,90 @@ with tab_sub:
 # ════════════════════════════════════════════════════════
 with tab_plan:
     st.markdown('<div class="section-head">プランを登録</div>', unsafe_allow_html=True)
-    pc1, pc2, pc3 = st.columns([3,2,1])
-    with pc1:
-        new_plan_name = st.text_input("プラン名", placeholder="例: Basic ($5)", key="plan_new_name")
-    with pc2:
-        new_plan_price = st.number_input("月額（¥）", min_value=0, value=0, step=100, key="plan_new_price")
-    with pc3:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("追加", key="plan_add"):
-            if new_plan_name:
-                res = sb_insert("patreon_plans", {"plan_name": new_plan_name, "price": new_plan_price})
+    _, df_custs, df_plans = load_data()
+
+    with st.form(key="new_plan_form"):
+        pc1, pc2, pc3 = st.columns([3,2,1])
+        with pc1: p_name  = st.text_input("プラン名 *", placeholder="例: Basic ($5)")
+        with pc2: p_price = st.number_input("月額（¥）", min_value=0, value=750, step=100)
+        with pc3: p_note  = st.text_input("備考")
+        if st.form_submit_button("登録する"):
+            if not p_name:
+                st.markdown('<div class="err-box">プラン名は必須です</div>', unsafe_allow_html=True)
+            else:
+                res = sb_insert("patreon_plans", {"name": p_name, "price": p_price, "note": p_note or None})
                 if res:
+                    st.markdown('<div class="success-box">登録しました</div>', unsafe_allow_html=True)
                     st.rerun()
 
-    st.markdown('<div class="section-head">プラン一覧</div>', unsafe_allow_html=True)
-    df_plans = get_plans()
+    st.markdown('<div class="section-head">登録済みプラン</div>', unsafe_allow_html=True)
     if df_plans.empty:
         st.markdown('<div class="info-box">プランがありません</div>', unsafe_allow_html=True)
     else:
         for _, row in df_plans.iterrows():
-            pid = int(row["id"])
-            lc1, lc2, lc3, lc4 = st.columns([3,2,1,1])
-            with lc1:
-                e_name = st.text_input("プラン名", value=row["plan_name"], key=f"plan_name_{pid}", label_visibility="collapsed")
-            with lc2:
-                e_price = st.number_input("月額（¥）", value=int(row["price"]), step=100, key=f"plan_price_{pid}", label_visibility="collapsed")
-            with lc3:
-                if st.button("更新", key=f"plan_upd_{pid}"):
-                    sb_update("patreon_plans", {"plan_name": e_name, "price": e_price}, {"id": pid})
-                    st.rerun()
-            with lc4:
-                if st.button("削除", key=f"plan_del_{pid}"):
-                    sb_delete("patreon_plans", {"id": pid})
+            c1, c2, c3 = st.columns([4, 2, 1])
+            with c1: st.markdown(f"**{row['name']}**")
+            with c2: st.caption(f"¥{int(row.get('price',0)):,}/月")
+            with c3:
+                if st.button("削除", key=f"plan_del_{row['id']}"):
+                    sb_delete("patreon_plans", {"id": int(row["id"])})
                     st.rerun()
 
 # ════════════════════════════════════════════════════════
-# タブ3: MRR（月次売上）
+# タブ3: MRR分析
 # ════════════════════════════════════════════════════════
 with tab_mrr:
-    st.markdown('<div class="section-head">MRR（月次経常収益）</div>', unsafe_allow_html=True)
-    st.caption("ロジック: 各月について、start_date以降かつend_dateがない（または end_date以前）のサブスクを合計します")
+    st.markdown('<div class="section-head">月別MRR推移</div>', unsafe_allow_html=True)
+    st.caption("各月に契約中のサブスクのMRRを計算します")
 
-    rows_s  = sb_select("patreon_subscriptions", order="start_date")
-    df_subs = to_df(rows_s)
+    df_subs, _, _ = load_data()
 
     if df_subs.empty:
-        st.markdown('<div class="info-box">サブスクデータがありません</div>', unsafe_allow_html=True)
+        st.markdown('<div class="info-box">データがありません</div>', unsafe_allow_html=True)
     else:
-        # 集計する月の範囲を決定（最古のstart_dateから今月まで）
-        min_date_str = df_subs["start_date"].min()
-        try:
-            min_date = date.fromisoformat(str(min_date_str)[:10])
-        except Exception:
-            min_date = date.today().replace(day=1)
+        # 表示月数を選択
+        n_months = st.slider("表示月数", min_value=3, max_value=24, value=12, step=1)
 
-        today = date.today()
+        # 月リストを生成（過去n_months月）
         months = []
-        cur = min_date.replace(day=1)
-        while cur <= today.replace(day=1):
-            months.append(cur.strftime("%Y-%m"))
-            cur = (cur + relativedelta(months=1))
+        d = date.today().replace(day=1)
+        for _ in range(n_months):
+            months.append(d.strftime("%Y-%m"))
+            if d.month == 1:
+                d = d.replace(year=d.year-1, month=12)
+            else:
+                d = d.replace(month=d.month-1)
+        months = list(reversed(months))
 
-        # 月別MRR計算
+        # 各月のMRRを計算
         mrr_data = []
         for ym in months:
             mrr = calc_mrr(df_subs, ym)
-            mrr_data.append({"月": ym, "MRR（¥）": mrr})
+            mrr_data.append({"月": ym, "MRR(¥)": mrr})
 
         df_mrr = pd.DataFrame(mrr_data)
+        if not df_mrr.empty and df_mrr["MRR(¥)"].sum() > 0:
+            st.line_chart(df_mrr.set_index("月")["MRR(¥)"])
+            st.dataframe(df_mrr, use_container_width=True, hide_index=True)
+        else:
+            st.markdown('<div class="info-box">MRRデータがありません。サブスクを登録してください。</div>', unsafe_allow_html=True)
 
-        # 現在月のMRR
-        current_mrr = calc_mrr(df_subs, today.strftime("%Y-%m"))
-        prev_month  = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
-        prev_mrr    = calc_mrr(df_subs, prev_month)
-        delta_mrr   = current_mrr - prev_mrr
-        delta_color = "#15803d" if delta_mrr >= 0 else "#dc2626"
+        # 現在の契約中サブスク一覧
+        st.markdown('<div class="section-head">現在の契約中サブスク</div>', unsafe_allow_html=True)
+        df_subs["is_active_flag"] = df_subs["end_date"].apply(is_active)
+        df_active = df_subs[df_subs["is_active_flag"]].copy()
 
-        st.markdown(f"""<div class="metric-row">
-          <div class="metric-card"><div class="val">¥{current_mrr:,}</div><div class="lbl">今月MRR</div></div>
-          <div class="metric-card"><div class="val" style="color:{delta_color};">¥{delta_mrr:+,}</div><div class="lbl">先月比</div></div>
-          <div class="metric-card"><div class="val">¥{prev_mrr:,}</div><div class="lbl">先月MRR</div></div>
-        </div>""", unsafe_allow_html=True)
-
-        # MRR推移グラフ
-        st.markdown('<div class="section-head">MRR月別推移</div>', unsafe_allow_html=True)
-        st.line_chart(df_mrr.set_index("月")["MRR（¥）"])
-
-        # テーブル
-        st.dataframe(df_mrr.sort_values("月", ascending=False), use_container_width=True)
-
-        # プラン別内訳（現在月）
-        st.markdown('<div class="section-head">現在月のプラン別内訳</div>', unsafe_allow_html=True)
-        active_subs = df_subs[
-            (df_subs["start_date"] <= today.strftime("%Y-%m-%d")) &
-            (df_subs["end_date"].isna() | df_subs["end_date"].isin(["", "None", "null"]))
-        ]
-        if not active_subs.empty:
-            plan_breakdown = active_subs.groupby("plan_name").agg(
-                件数=("id","count"),
-                合計MRR=("monthly_price","sum")
-            ).reset_index()
-            plan_breakdown["合計MRR"] = plan_breakdown["合計MRR"].apply(lambda x: f"¥{int(x):,}")
-            st.dataframe(plan_breakdown, use_container_width=True)
+        if not df_active.empty and not df_custs.empty:
+            df_active = df_active.merge(
+                df_custs[["id","name"]].rename(columns={"id":"customer_id","name":"顧客名"}),
+                on="customer_id", how="left"
+            )
+            st.dataframe(
+                df_active[["顧客名","plan_name","monthly_price","start_date"]].rename(columns={
+                    "plan_name":"プラン","monthly_price":"月額(¥)","start_date":"開始日"
+                }),
+                use_container_width=True, hide_index=True
+            )
+            st.markdown(f"**契約中合計MRR: ¥{int(df_active['monthly_price'].fillna(0).sum()):,}**")
+        else:
+            st.markdown('<div class="info-box">契約中のサブスクがありません</div>', unsafe_allow_html=True)
