@@ -59,50 +59,10 @@ def is_active_sub(row) -> bool:
     effective_end = cancel or end
     return effective_end == ""
 
-def calc_mrr(df_subs: pd.DataFrame, year_month: str) -> int:
-    """
-    指定月のMRRを計算
-    ロジック:
-      - start_date <= 対象月末日
-      - cancel_date が空 OR cancel_dateの翌月以降が対象月
-        例: cancel_date=2026-03-15 → 2026-03まではMRRに含む、2026-04以降は除外
-    """
-    if df_subs.empty: return 0
-    try:
-        y, m    = int(year_month[:4]), int(year_month[5:7])
-        m_start = f"{year_month}-01"
-        m_end   = f"{year_month}-{monthrange(y, m)[1]:02d}"
-    except Exception:
-        return 0
-
-    total = 0
-    for _, row in df_subs.iterrows():
-        s = safe_date(row.get("start_date"))
-        if not s or s > m_end:
-            continue
-
-        # cancel_dateがある場合: 翌月から除外
-        cancel = safe_date(row.get("cancel_date")) or safe_date(row.get("end_date"))
-        if cancel:
-            try:
-                cd = date.fromisoformat(cancel)
-                # 翌月の1日を計算
-                next_m = cd.replace(
-                    year=cd.year + (1 if cd.month == 12 else 0),
-                    month=cd.month % 12 + 1,
-                    day=1
-                )
-                # 対象月の1日が翌月以降なら除外
-                if date.fromisoformat(m_start) >= next_m:
-                    continue
-            except Exception:
-                pass
-
-        try:
-            total += int(row.get("monthly_price", 0) or 0)
-        except Exception:
-            pass
-    return total
+def calc_mrr(df_subs, year_month: str) -> int:
+    """共通MRR計算関数のラッパー（patreon_management用）"""
+    from common import calc_patreon_mrr_common
+    return calc_patreon_mrr_common(df_subs, year_month)
 
 def add_months(d: date, n: int) -> date:
     m = d.month + n
