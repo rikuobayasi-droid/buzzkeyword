@@ -306,7 +306,8 @@ if sel_id:
     with tab_hist:
         rows_p   = sb_select("products", order="name")
         df_prods = to_df(rows_p)
-        df_prods_non_pat = df_prods[df_prods["category"] != "Patreon"] if not df_prods.empty and "category" in df_prods.columns else df_prods
+        # 全商品を取得（カテゴリーで絞り込まない）
+        df_prods_non_pat = df_prods.copy() if not df_prods.empty else pd.DataFrame()
         prod_names = df_prods_non_pat["name"].tolist() if not df_prods_non_pat.empty else []
 
         st.markdown('<div class="info-box">Patreonサブスクリプションは「Patreon管理」ページで管理してください</div>', unsafe_allow_html=True)
