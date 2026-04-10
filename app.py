@@ -122,6 +122,22 @@ with c2:
     if st.button("Patreon管理\n\nサブスク登録・解約管理\nMRR（月次売上）計算\nプランマスタ管理\n\n→ /patreon_management", key="nav_patreon"):
         st.switch_page("pages/13_patreon_management.py")
 
+# ── AI コンシェルジュ ─────────────────────────────────────────────────────────
+st.markdown('<div class="cat-label">AI コンシェルジュ</div>', unsafe_allow_html=True)
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    if st.button("ホワイトリスト\n\nお気に入り保存ユーザー一覧\n連絡済み管理\n顧客管理との連携\n\n→ /concierge_whitelist", key="nav_whitelist"):
+        st.switch_page("pages/14_concierge_whitelist.py")
+
+with c2:
+    if st.button("スポット人気ランキング\n\nいいね・いまいち集計\n人気スポット分析\nDislike理由の可視化\n\n→ /concierge_whitelist", key="nav_ranking"):
+        st.switch_page("pages/14_concierge_whitelist.py")
+
+with c3:
+    if st.button("セッション分析\n\nAI利用者のセッション一覧\nWhatsAppクリック追跡\nプロ依頼の管理\n\n→ /concierge_whitelist", key="nav_sessions"):
+        st.switch_page("pages/14_concierge_whitelist.py")
+
 st.markdown("""
 <div style="text-align:center;margin-top:2.5rem;padding-top:1.5rem;border-top:1px solid #e5e7eb;">
   <span style="font-size:.72rem;color:#d1d5db;letter-spacing:1px;">Tabibiyori Dashboard — Japan Content Operations</span>
