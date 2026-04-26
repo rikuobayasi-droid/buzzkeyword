@@ -241,22 +241,106 @@ def render_analysis():
     else:
         st.caption("購入データが増えると表示されます")
 
-    # ── 購入者ベース（修正1: buyer_ids に Patreon 含む）────────────────────
-    st.markdown('<div class="section-head">購入者ベース分析（purchases + Patreon含む）</div>', unsafe_allow_html=True)
-    df_buyers = df_c_valid[df_c_valid["id"].isin(buyer_ids)]
-    if df_buyers.empty:
-        st.caption("購入データがある顧客が増えると表示されます")
+    # ── ① 顧客LTV（生涯購入額）ランキング ───────────────────────────────────
+    st.markdown('<div class="section-head">顧客LTV ランキング（生涯購入額 Top10）</div>', unsafe_allow_html=True)
+    if not df_p.empty:
+        ltv = df_p.groupby("customer_id")["amount"].sum().reset_index()
+        ltv.columns = ["customer_id", "ltv"]
+        ltv["customer_id"] = pd.to_numeric(ltv["customer_id"], errors="coerce")
+        ltv = ltv.merge(df_c[["id","name"]].rename(columns={"id":"customer_id"}), on="customer_id", how="left")
+        ltv = ltv.sort_values("ltv", ascending=False).head(10)
+        ltv["ltv_fmt"] = ltv["ltv"].apply(lambda x: f"¥{int(x):,}")
+        st.bar_chart(ltv.set_index("name")["ltv"])
+        st.dataframe(
+            ltv[["name","ltv_fmt"]].rename(columns={"name":"顧客名","ltv_fmt":"購入総額"}),
+            use_container_width=True, hide_index=True
+        )
     else:
-        buyer_cat = df_buyers.groupby(["hour","product_category"]).size().reset_index(name="count")
-        if not buyer_cat.empty:
-            pivot_bc = buyer_cat.pivot(index="hour",columns="product_category",values="count").fillna(0)
-            pivot_bc = pivot_bc.reindex(range(24), fill_value=0)
-            st.bar_chart(pivot_bc)
-        if not df_buyers.empty:
-            b_peak = int(df_buyers["hour"].value_counts().idxmax())
-            st.markdown(f'<div class="success-box">購入者ピーク: <strong>{b_peak:02d}:00</strong> &nbsp; 推奨投稿: <strong>{posting_window(b_peak)}</strong></div>', unsafe_allow_html=True)
+        st.caption("購入データが増えると表示されます")
 
-    # ── CVR（修正1: Patreon含む） ─────────────────────────────────────────────
+    # ── ② 問い合わせ〜購入までのリードタイム ────────────────────────────────
+    st.markdown('<div class="section-head">問い合わせ〜初回購入までのリードタイム</div>', unsafe_allow_html=True)
+    if not df_p.empty:
+        lead_rows = []
+        for _, row in df_c.iterrows():
+            cid_val = row["id"]
+            contact = str(row.get("contact_date","") or "")[:10]
+            if not contact or contact == "None": continue
+            cp = df_p[df_p["customer_id"] == cid_val]
+            if cp.empty: continue
+            try:
+                first_purchase = pd.to_datetime(cp["purchase_date"].min())
+                contact_d      = pd.to_datetime(contact)
+                days = (first_purchase - contact_d).days
+                if 0 <= days <= 365:
+                    lead_rows.append({"顧客名": row["name"], "リードタイム（日）": days})
+            except Exception:
+                pass
+        if lead_rows:
+            df_lead = pd.DataFrame(lead_rows).sort_values("リードタイム（日）")
+            avg_lead = df_lead["リードタイム（日）"].mean()
+            med_lead = df_lead["リードタイム（日）"].median()
+            st.markdown(f"""<div class="metric-row">
+              <div class="metric-card"><div class="val">{avg_lead:.1f}日</div><div class="lbl">平均リードタイム</div></div>
+              <div class="metric-card"><div class="val">{med_lead:.0f}日</div><div class="lbl">中央値</div></div>
+              <div class="metric-card"><div class="val">{len(df_lead)}名</div><div class="lbl">計測対象顧客数</div></div>
+            </div>""", unsafe_allow_html=True)
+            # 分布を棒グラフで表示（0-7日, 8-30日, 31-90日, 91日以上）
+            bins = {"0〜7日": 0, "8〜30日": 0, "31〜90日": 0, "91日以上": 0}
+            for d in df_lead["リードタイム（日）"]:
+                if d <= 7:   bins["0〜7日"]   += 1
+                elif d <= 30: bins["8〜30日"]  += 1
+                elif d <= 90: bins["31〜90日"] += 1
+                else:         bins["91日以上"] += 1
+            st.bar_chart(pd.Series(bins))
+        else:
+            st.caption("contact_dateと購入日が揃うと表示されます")
+
+    # ── ③ 月別新規顧客 vs リピーター ────────────────────────────────────────
+    st.markdown('<div class="section-head">月別 新規顧客 vs リピーター</div>', unsafe_allow_html=True)
+    if not df_p.empty:
+        df_p_copy = df_p.copy()
+        df_p_copy["ym"] = pd.to_datetime(df_p_copy["purchase_date"], errors="coerce").dt.to_period("M").astype(str)
+        df_p_copy["customer_id"] = pd.to_numeric(df_p_copy["customer_id"], errors="coerce")
+        df_p_copy = df_p_copy.dropna(subset=["ym","customer_id"])
+        df_p_copy = df_p_copy.sort_values("purchase_date")
+
+        # 初回購入月を特定
+        first_purchase_ym = df_p_copy.groupby("customer_id")["ym"].min()
+        df_p_copy["is_new"] = df_p_copy.apply(
+            lambda r: r["ym"] == first_purchase_ym.get(r["customer_id"], ""), axis=1
+        )
+        monthly = df_p_copy.groupby(["ym","is_new"])["customer_id"].nunique().reset_index()
+        monthly["種別"] = monthly["is_new"].map({True:"新規", False:"リピーター"})
+        pivot_monthly = monthly.pivot(index="ym", columns="種別", values="customer_id").fillna(0).astype(int)
+        if not pivot_monthly.empty:
+            st.bar_chart(pivot_monthly)
+    else:
+        st.caption("購入データが増えると表示されます")
+
+    # ── ④ キャンセルランク × プラットフォーム ──────────────────────────────
+    st.markdown('<div class="section-head">キャンセルランク × プラットフォーム</div>', unsafe_allow_html=True)
+    if "cancel_rank" in df_c.columns:
+        df_cancel = df_c[df_c["cancel_rank"] != "normal"].copy()
+        if not df_cancel.empty:
+            RANK_LABEL = {"yellow":"🟡 Yellow","red":"🔴 Red","black":"⬛ Black"}
+            df_cancel["ランク"] = df_cancel["cancel_rank"].map(RANK_LABEL).fillna(df_cancel["cancel_rank"])
+            cancel_cross = df_cancel.groupby(["platform","ランク"]).size().reset_index(name="人数")
+            cancel_table = cancel_cross.pivot(index="platform", columns="ランク", values="人数").fillna(0).astype(int)
+            st.dataframe(cancel_table, use_container_width=True)
+            st.bar_chart(cancel_table)
+            # 最もキャンセルが多いプラットフォーム
+            cancel_total = df_cancel.groupby("platform").size().sort_values(ascending=False)
+            if not cancel_total.empty:
+                worst_plat = cancel_total.index[0]
+                st.markdown(
+                    f'<div class="err-box">⚠️ <strong>{worst_plat}</strong> からの顧客のキャンセルが最も多い（{int(cancel_total.iloc[0])}名）</div>',
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption("キャンセル履歴のある顧客が増えると表示されます")
+
+    # ── CVR ──────────────────────────────────────────────────────────────────
     st.markdown('<div class="section-head">コンバージョン分析</div>', unsafe_allow_html=True)
     total_inq   = len(df_c)
     total_buyer = len(buyer_ids & set(df_c["id"].tolist()))
