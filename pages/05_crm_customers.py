@@ -115,13 +115,22 @@ def render_analysis():
         df_c_valid["contact_date"].astype(str).str[:10], errors="coerce"
     ).dt.weekday
 
-    # 修正1: 購入済みIDを両テーブルから取得
-    buyer_ids_p = set(df_p["customer_id"].dropna().astype(int).tolist()) if not df_p.empty else set()
-    buyer_ids_s = set(df_s["customer_id"].dropna().astype(int).tolist()) if not df_s.empty else set()
-    buyer_ids   = buyer_ids_p | buyer_ids_s  # 和集合
+    # 購入済みIDを両テーブルから取得（int型に統一）
+    buyer_ids_p = set(pd.to_numeric(df_p["customer_id"], errors="coerce").dropna().astype(int).tolist()) if not df_p.empty else set()
+    buyer_ids_s = set(pd.to_numeric(df_s["customer_id"], errors="coerce").dropna().astype(int).tolist()) if not df_s.empty else set()
+    buyer_ids   = buyer_ids_p | buyer_ids_s
 
     # 顧客ごとの購入カテゴリー（purchases + patreon_subscriptions 統合）
+    # customer_id を int に統一して型不一致による「未購入」誤判定を防ぐ
+    if not df_p.empty:
+        df_p = df_p.copy()
+        df_p["customer_id"] = pd.to_numeric(df_p["customer_id"], errors="coerce").fillna(-1).astype(int)
+    if not df_s.empty:
+        df_s = df_s.copy()
+        df_s["customer_id"] = pd.to_numeric(df_s["customer_id"], errors="coerce").fillna(-1).astype(int)
+
     def get_first_category(cid):
+        cid = int(cid)
         cats = []
         if not df_p.empty and not df_prods.empty:
             cp = df_p[df_p["customer_id"] == cid]
