@@ -46,15 +46,18 @@ def get_metrics(acc_id, df_hist, df_posts, year=None, month=None):
     """アカウントのメトリクスを取得（年月フィルター対応）"""
     result = {"followers": 0, "followers_raw": 0.0, "avg_likes": 0,
               "avg_comments": 0, "weekly_posts": 0.0, "er": 0.0,
-              "growth": None, "growth_from": None, "growth_to": None}
+              "growth": None, "growth_from": None, "growth_to": None,
+              "growth_prev_fw": 0.0}
     if not df_hist.empty:
-        ah = df_hist[df_hist["account_id"] == int(acc_id)].copy()
-        # 年月フィルター
+        ah_all = df_hist[df_hist["account_id"] == int(acc_id)].copy().sort_values("recorded_date")
+
+        # 期間フィルター
+        ah = ah_all.copy()
         if year and "recorded_date" in ah.columns:
             ah = ah[ah["recorded_date"].astype(str).str.startswith(str(year))]
         if month and "recorded_date" in ah.columns:
             ah = ah[ah["recorded_date"].astype(str).str[5:7] == f"{int(month):02d}"]
-        ah = ah.sort_values("recorded_date")
+
         if not ah.empty:
             latest = ah.iloc[-1]
             f  = int(latest.get("followers", 0) or 0)
@@ -63,16 +66,32 @@ def get_metrics(acc_id, df_hist, df_posts, year=None, month=None):
             fw = float(latest.get("followers_raw", 0) or 0)
             result.update({"followers": f, "followers_raw": fw,
                            "avg_likes": l, "avg_comments": c, "er": calc_er(f, l, c)})
-            # 増加率: 最新の1つ前のデータとの比較（前月比）
+
+            latest_ym = str(latest.get("recorded_date",""))[:7]
+            result["growth_to"] = latest_ym
+
+            # 増加率の計算:
+            # フィルター内に2件以上 → フィルター内の最初と最新を比較
+            # フィルター内が1件  → 全データから直前の月を取得して比較
             if len(ah) >= 2:
-                prev        = ah.iloc[-2]
-                prev_f      = int(prev.get("followers", 0) or 0)
-                prev_ym     = str(prev.get("recorded_date",""))[:7]
-                latest_ym   = str(latest.get("recorded_date",""))[:7]
-                result["growth"]      = calc_growth(prev_f, f)
-                result["growth_from"] = prev_ym    # 比較元の年月
-                result["growth_to"]   = latest_ym  # 比較先の年月
+                prev           = ah.iloc[-2]
+                prev_f         = int(prev.get("followers", 0) or 0)
+                prev_ym        = str(prev.get("recorded_date",""))[:7]
+                result["growth"]         = calc_growth(prev_f, f)
+                result["growth_from"]    = prev_ym
                 result["growth_prev_fw"] = float(prev.get("followers_raw", 0) or 0)
+            else:
+                # フィルター内1件の場合、全データから直前のレコードを探す
+                latest_date = str(latest.get("recorded_date",""))[:10]
+                prev_rows   = ah_all[ah_all["recorded_date"].astype(str).str[:10] < latest_date]
+                if not prev_rows.empty:
+                    prev           = prev_rows.iloc[-1]
+                    prev_f         = int(prev.get("followers", 0) or 0)
+                    prev_ym        = str(prev.get("recorded_date",""))[:7]
+                    result["growth"]         = calc_growth(prev_f, f)
+                    result["growth_from"]    = prev_ym
+                    result["growth_prev_fw"] = float(prev.get("followers_raw", 0) or 0)
+
     if not df_posts.empty:
         ap = df_posts[df_posts["account_id"] == int(acc_id)].copy()
         if year: ap = ap[ap["post_date"].astype(str).str.startswith(str(year))]
@@ -573,7 +592,14 @@ else:
 
                 # 競合平均との差分分析
                 if own_metrics and comp_metrics:
-                    st.markdown('<div class="section-head">自社 vs 競合平均 差分分析</div>', unsafe_allow_html=True)
+                    # 集計期間のラベル
+                    if sel_year and sel_month:
+                        period_label = f"{sel_year}年{sel_month}月"
+                    elif sel_year:
+                        period_label = f"{sel_year}年"
+                    else:
+                        period_label = "全期間"
+                    st.markdown(f'<div class="section-head">自社 vs 競合平均 差分分析　<span style="font-size:.8rem;color:#6b7280;">集計期間: {period_label}</span></div>', unsafe_allow_html=True)
                     comp_avg_er    = pd.DataFrame(comp_metrics)["er"].mean()
                     comp_avg_fw    = pd.DataFrame(comp_metrics)["followers_raw"].mean()
                     comp_avg_growth= pd.DataFrame(comp_metrics)["growth"].dropna().mean() if any(m["growth"] is not None for m in comp_metrics) else 0
