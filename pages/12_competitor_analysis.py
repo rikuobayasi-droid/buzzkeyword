@@ -820,7 +820,10 @@ else:
                     growth_tos   = [r for r in df_loc_m["growth_to"].tolist()   if r]
                     growth_period = ""
                     if growth_froms and growth_tos:
-                        growth_period = f"（増加率: {min(growth_froms)}→{max(growth_tos)}）"
+                        try:
+                            growth_period = f"（増加率: {min(growth_froms)}→{max(growth_tos)}）"
+                        except Exception:
+                            pass
 
                     st.markdown(
                         f'<div class="section-head">{sel_loc} のアカウント分析　'
