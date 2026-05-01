@@ -278,18 +278,51 @@ if sel_id:
                 ah["ER(%)"] = ah.apply(lambda r: calc_er(
                     int(r.get("followers",0)), int(r.get("avg_likes",0)), int(r.get("avg_comments",0))
                 ), axis=1)
-                ah["投稿頻度"] = ah["weekly_posts"].apply(
-                    lambda x: f"{float(x):.1f}本/週" if x else ""
-                )
-                show_cols = ["year_month","フォロワー(万)","avg_likes","avg_comments","ER(%)","投稿頻度","latest_post"]
-                show_cols = [c for c in show_cols if c in ah.columns]
-                st.dataframe(
-                    ah[show_cols].rename(columns={
-                        "year_month":"年月","avg_likes":"平均いいね",
-                        "avg_comments":"平均コメント","latest_post":"直近投稿"
-                    }),
-                    use_container_width=True, hide_index=True
-                )
+
+                for i, (_, hr) in enumerate(ah.iterrows()):
+                    hid = int(hr["id"])
+                    ym  = hr.get("year_month","")
+                    fw  = float(hr.get("followers_raw", 0) or 0)
+                    er  = hr.get("ER(%)", 0)
+                    lp  = str(hr.get("latest_post","") or "")
+
+                    with st.expander(
+                        f"📅 {ym} | {fw:.1f}万フォロワー | ER {er}% | {lp[:20] if lp else '直近投稿なし'}"
+                    ):
+                        with st.form(key=f"edit_hist_{hid}_{i}"):
+                            ec1, ec2 = st.columns(2)
+                            with ec1:
+                                e_ym = st.text_input("年月 (YYYY-MM)", value=ym, key=f"eym_{hid}_{i}")
+                                e_fw = st.number_input(
+                                    "フォロワー数（万人）",
+                                    min_value=0.0, value=fw, step=0.1, format="%.1f",
+                                    key=f"efw_{hid}_{i}"
+                                )
+                            with ec2:
+                                e_lp   = st.text_area("直近投稿内容", value=lp, height=80, key=f"elp_{hid}_{i}")
+                                e_note = st.text_input("メモ", value=str(hr.get("note","") or ""), key=f"en_{hid}_{i}")
+
+                            bc1, bc2 = st.columns(2)
+                            with bc1:
+                                if st.form_submit_button("✏️ 更新する"):
+                                    new_followers = int(e_fw * 10000)
+                                    ok = sb_update("competitor_history", {
+                                        "year_month":    e_ym,
+                                        "recorded_date": f"{e_ym}-01",
+                                        "followers":     new_followers,
+                                        "followers_raw": e_fw,
+                                        "latest_post":   e_lp.strip() or None,
+                                        "note":          e_note.strip() or None,
+                                    }, {"id": hid})
+                                    if ok:
+                                        st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
+                                        st.cache_data.clear(); st.rerun()
+                                    else:
+                                        st.markdown('<div class="err-box">更新に失敗しました</div>', unsafe_allow_html=True)
+                            with bc2:
+                                if st.form_submit_button("🗑️ 削除する"):
+                                    sb_delete("competitor_history", {"id": hid})
+                                    st.cache_data.clear(); st.rerun()
 
                 # フォロワー推移グラフ
                 if len(ah) >= 2:
