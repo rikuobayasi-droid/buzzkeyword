@@ -45,7 +45,8 @@ def calc_weekly_posts(df_posts_sorted):
 def get_metrics(acc_id, df_hist, df_posts, year=None, month=None):
     """アカウントのメトリクスを取得（年月フィルター対応）"""
     result = {"followers": 0, "followers_raw": 0.0, "avg_likes": 0,
-              "avg_comments": 0, "weekly_posts": 0.0, "er": 0.0, "growth": None}
+              "avg_comments": 0, "weekly_posts": 0.0, "er": 0.0,
+              "growth": None, "growth_from": None, "growth_to": None}
     if not df_hist.empty:
         ah = df_hist[df_hist["account_id"] == int(acc_id)].copy()
         # 年月フィルター
@@ -62,8 +63,16 @@ def get_metrics(acc_id, df_hist, df_posts, year=None, month=None):
             fw = float(latest.get("followers_raw", 0) or 0)
             result.update({"followers": f, "followers_raw": fw,
                            "avg_likes": l, "avg_comments": c, "er": calc_er(f, l, c)})
+            # 増加率: 最新の1つ前のデータとの比較（前月比）
             if len(ah) >= 2:
-                result["growth"] = calc_growth(int(ah.iloc[0]["followers"] or 0), f)
+                prev        = ah.iloc[-2]
+                prev_f      = int(prev.get("followers", 0) or 0)
+                prev_ym     = str(prev.get("recorded_date",""))[:7]
+                latest_ym   = str(latest.get("recorded_date",""))[:7]
+                result["growth"]      = calc_growth(prev_f, f)
+                result["growth_from"] = prev_ym    # 比較元の年月
+                result["growth_to"]   = latest_ym  # 比較先の年月
+                result["growth_prev_fw"] = float(prev.get("followers_raw", 0) or 0)
     if not df_posts.empty:
         ap = df_posts[df_posts["account_id"] == int(acc_id)].copy()
         if year: ap = ap[ap["post_date"].astype(str).str.startswith(str(year))]
@@ -123,12 +132,17 @@ if sel_id:
         m   = get_metrics(cid, df_hist, df_posts)
         loc = row.get("location","") or row.get("content_region","") or ""
         cat = row.get("category","") or row.get("content_genre","") or ""
-        growth_str = f"{m['growth']:+.1f}%" if m["growth"] is not None else "—"
-        growth_col = "#15803d" if (m["growth"] or 0) >= 0 else "#dc2626"
+        growth_str  = f"{m['growth']:+.1f}%" if m["growth"] is not None else "—"
+        growth_col  = "#15803d" if (m["growth"] or 0) >= 0 else "#dc2626"
+        growth_from = m.get("growth_from","")
+        growth_to   = m.get("growth_to","")
+        growth_prev = m.get("growth_prev_fw", 0)
+        growth_lbl  = f"前月比（{growth_from}→{growth_to}）" if growth_from and growth_to else "増加率（前月比）"
+        growth_sub  = f"{growth_prev:.1f}万→{m['followers_raw']:.1f}万" if growth_from else ""
 
         st.markdown(f"""<div class="metric-row">
-          <div class="metric-card"><div class="val">{m['followers_raw']:.1f}万</div><div class="lbl">フォロワー数</div></div>
-          <div class="metric-card"><div class="val" style="color:{growth_col};">{growth_str}</div><div class="lbl">フォロワー増加率</div></div>
+          <div class="metric-card"><div class="val">{m['followers_raw']:.1f}万</div><div class="lbl">フォロワー数（{growth_to or '最新'}）</div></div>
+          <div class="metric-card"><div class="val" style="color:{growth_col};">{growth_str}</div><div class="lbl">{growth_lbl}</div><div style="font-size:.7rem;color:#9ca3af;">{growth_sub}</div></div>
           <div class="metric-card"><div class="val">{m['er']}%</div><div class="lbl">ER</div></div>
           <div class="metric-card"><div class="val">{m['avg_likes']:,}</div><div class="lbl">平均いいね</div></div>
           <div class="metric-card"><div class="val">{m['avg_comments']:,}</div><div class="lbl">平均コメント</div></div>
@@ -610,21 +624,32 @@ else:
                 )
                 if sel_compare:
                     df_cmp = df_all[df_all["label"].isin(sel_compare)].set_index("label")
+
+                    # 自社=赤、競合=青 で色分けしたデータを作成
+                    def colored_bar(df_data, col, title):
+                        """自社を赤、競合を青で棒グラフ表示"""
+                        st.markdown(f"**{title}**")
+                        # 自社と競合を分けて表示
+                        own_data  = df_data[df_data.index.str.startswith("🏠")][col]
+                        comp_data = df_data[df_data.index.str.startswith("🔍")][col]
+                        if not own_data.empty and not comp_data.empty:
+                            # 両方ある場合は並べて表示
+                            combined = pd.DataFrame({
+                                "🏠 自社（赤）":   own_data,
+                                "🔍 競合（青）": comp_data,
+                            })
+                            st.bar_chart(combined)
+                        elif not own_data.empty:
+                            st.bar_chart(own_data.rename("🏠 自社"))
+                        elif not comp_data.empty:
+                            st.bar_chart(comp_data.rename("🔍 競合"))
+
                     col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.markdown("**エンゲージメント率(%)**")
-                        st.bar_chart(df_cmp["er"])
-                    with col_b:
-                        st.markdown("**フォロワー数（万人）**")
-                        st.bar_chart(df_cmp["followers_raw"])
+                    with col_a: colored_bar(df_cmp, "er",           "エンゲージメント率(%)")
+                    with col_b: colored_bar(df_cmp, "followers_raw","フォロワー数（万人）")
                     col_c, col_d = st.columns(2)
-                    with col_c:
-                        st.markdown("**フォロワー増加率(%)**")
-                        growth_data = df_cmp["growth"].fillna(0)
-                        st.bar_chart(growth_data)
-                    with col_d:
-                        st.markdown("**投稿頻度（本/週）**")
-                        st.bar_chart(df_cmp["weekly_posts"])
+                    with col_c: colored_bar(df_cmp, "growth",       "フォロワー増加率（前月比%）")
+                    with col_d: colored_bar(df_cmp, "weekly_posts", "投稿頻度（本/週）")
 
                 # フォロワー推移（折れ線）
                 st.markdown('<div class="section-head">フォロワー推移（折れ線）</div>', unsafe_allow_html=True)
