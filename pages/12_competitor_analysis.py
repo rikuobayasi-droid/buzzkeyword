@@ -749,44 +749,104 @@ else:
 
                     # ── 市場分析テキストレポート（自動生成）─────────────────
                     st.markdown('<div class="section-head">市場分析レポート</div>', unsafe_allow_html=True)
-                    growing     = df_loc_m[df_loc_m["growth"] > 3]
-                    shrinking   = df_loc_m[df_loc_m["growth"] < -3]
-                    high_er     = df_loc_m[df_loc_m["er"] > 3]
-                    low_er      = df_loc_m[df_loc_m["er"] < 1]
-                    top_acc     = df_loc_m.sort_values("growth", ascending=False).iloc[0] if not df_loc_m.empty else None
-                    bottom_acc  = df_loc_m.sort_values("growth").iloc[0] if not df_loc_m.empty else None
+
+                    # 平均+3%を基準にした閾値設定
+                    threshold_up   = avg_gr + 3   # 平均より+3%超 → 拡大中
+                    threshold_down = avg_gr - 3   # 平均より-3%未満 → 収縮中
+
+                    growing   = df_loc_m[df_loc_m["growth"] > threshold_up]
+                    shrinking = df_loc_m[df_loc_m["growth"] < threshold_down]
+                    stable    = df_loc_m[
+                        (df_loc_m["growth"] >= threshold_down) &
+                        (df_loc_m["growth"] <= threshold_up)
+                    ]
+
+                    # トップアカウント（フォロワー増加率・ER それぞれ）
+                    top_growth = df_loc_m.sort_values("growth", ascending=False).iloc[0] if not df_loc_m.empty else None
+                    top_er     = df_loc_m.sort_values("er", ascending=False).iloc[0] if not df_loc_m.empty else None
 
                     reports = []
 
-                    # 市場全体の状況
-                    if avg_gr > 5:
-                        reports.append(("success", f"📈 **{sel_loc}市場は拡大中**です。平均フォロワー増加率 {avg_gr:+.1f}%（前月比）と高い成長率を示しています。積極的なコンテンツ投資を検討してください。"))
-                    elif avg_gr > 0:
-                        reports.append(("info", f"📊 **{sel_loc}市場は緩やかに成長中**です。平均増加率 {avg_gr:+.1f}%（前月比）。市場は安定していますが、差別化が重要です。"))
-                    elif avg_gr > -3:
-                        reports.append(("info", f"📉 **{sel_loc}市場は横ばい**です。平均増加率 {avg_gr:+.1f}%（前月比）。新しいコンテンツ戦略の検討を推奨します。"))
+                    # ── 市場全体の状況 ────────────────────────────────────────
+                    grow_cnt  = len(growing)
+                    stable_cnt= len(stable)
+                    shrink_cnt= len(shrinking)
+                    total_cnt = len(df_loc_m)
+
+                    if avg_gr > 0 and grow_cnt > shrink_cnt:
+                        reports.append(("success",
+                            f"📈 **{sel_loc}市場は全体的に拡大中**です。"
+                            f"平均フォロワー増加率 {avg_gr:+.1f}%（前月比）。"
+                            f"拡大中 {grow_cnt}アカウント / 横ばい {stable_cnt}アカウント / 収縮中 {shrink_cnt}アカウント。"
+                        ))
+                    elif shrink_cnt > grow_cnt:
+                        reports.append(("err",
+                            f"⚠️ **{sel_loc}市場は全体的に収縮傾向**です。"
+                            f"平均フォロワー増加率 {avg_gr:+.1f}%（前月比）。"
+                            f"拡大中 {grow_cnt}アカウント / 横ばい {stable_cnt}アカウント / 収縮中 {shrink_cnt}アカウント。"
+                            f"市場の飽和または競合激化が考えられます。"
+                        ))
                     else:
-                        reports.append(("err", f"⚠️ **{sel_loc}市場は全体的に収縮中**です。平均増加率 {avg_gr:+.1f}%（前月比）。フォロワーが減少傾向にあり、市場の飽和または競合激化が考えられます。"))
+                        reports.append(("info",
+                            f"📊 **{sel_loc}市場は横ばい**です。"
+                            f"平均フォロワー増加率 {avg_gr:+.1f}%（前月比）。"
+                            f"拡大中 {grow_cnt}アカウント / 横ばい {stable_cnt}アカウント / 収縮中 {shrink_cnt}アカウント。"
+                            f"差別化コンテンツで市場シェア拡大を狙う好機です。"
+                        ))
 
-                    # 成長しているアカウント
+                    # ── 増減の詳細 ────────────────────────────────────────────
                     if not growing.empty:
-                        names = "、".join(growing["username"].tolist())
-                        reports.append(("success", f"✅ **成長中のアカウント（+3%超）:** {names}。これらのコンテンツ戦略を参考にしてください。"))
+                        names = "、".join([f"@{u}" for u in growing["username"].tolist()])
+                        reports.append(("success",
+                            f"✅ **平均より+3%超の拡大中アカウント（{len(growing)}件）:** {names}。"
+                            f"これらのコンテンツ戦略・投稿頻度・テーマを参考にしてください。"
+                        ))
 
-                    # 減少しているアカウント
+                    if not stable.empty and total_cnt > 2:
+                        names = "、".join([f"@{u}" for u in stable["username"].tolist()])
+                        reports.append(("info",
+                            f"➡️ **横ばいのアカウント（{len(stable)}件）:** {names}。"
+                            f"平均増加率 ±3%以内で推移しています。"
+                        ))
+
                     if not shrinking.empty:
-                        names = "、".join(shrinking["username"].tolist())
-                        reports.append(("err", f"⚠️ **フォロワー減少中（-3%超）:** {names}。コンテンツの見直しが必要な可能性があります。"))
+                        names = "、".join([f"@{u}" for u in shrinking["username"].tolist()])
+                        reports.append(("err",
+                            f"⚠️ **平均より-3%超の収縮中アカウント（{len(shrinking)}件）:** {names}。"
+                            f"コンテンツの見直しが必要な可能性があります。"
+                        ))
 
-                    # ER分析
+                    # ── ER分析 ────────────────────────────────────────────────
+                    avg_er_threshold = avg_er + 1
+                    high_er = df_loc_m[df_loc_m["er"] > avg_er_threshold]
                     if avg_er > 3:
-                        reports.append(("success", f"💬 **エンゲージメント率が高い市場**です（平均 {avg_er:.2f}%）。ユーザーの関心が高く、コメント・いいねが活発です。"))
+                        reports.append(("success",
+                            f"💬 **エンゲージメント率が高い市場**です（平均 {avg_er:.2f}%）。"
+                            f"ユーザーの関心が高く、コメント・いいねが活発です。"
+                        ))
                     elif avg_er < 1:
-                        reports.append(("err", f"💬 **エンゲージメント率が低い市場**です（平均 {avg_er:.2f}%）。フォロワーの反応が薄く、投稿内容や投稿時間の改善を検討してください。"))
+                        reports.append(("err",
+                            f"💬 **エンゲージメント率が低い市場**です（平均 {avg_er:.2f}%）。"
+                            f"投稿内容や投稿時間の改善を検討してください。"
+                        ))
+                    else:
+                        reports.append(("info",
+                            f"💬 **エンゲージメント率は標準的**です（平均 {avg_er:.2f}%）。"
+                        ))
 
-                    # トップアカウント
-                    if top_acc is not None and top_acc["growth"] > 0:
-                        reports.append(("info", f"🏆 **最も成長中:** @{top_acc['username']}（前月比 {top_acc['growth']:+.1f}%）。このアカウントの投稿スタイル・頻度・テーマを参考にしてください。"))
+                    # ── トップアカウント（フォロワー増加率・ER 別々）────────
+                    if top_growth is not None:
+                        reports.append(("success",
+                            f"🏆 **フォロワー増加率トップ:** @{top_growth['username']}"
+                            f"（前月比 {top_growth['growth']:+.1f}% / フォロワー {top_growth['followers']:.1f}万）。"
+                            f"投稿スタイル・頻度・テーマを参考にしてください。"
+                        ))
+                    if top_er is not None and (top_growth is None or top_er["username"] != top_growth["username"]):
+                        reports.append(("success",
+                            f"💬 **エンゲージメント率トップ:** @{top_er['username']}"
+                            f"（ER {top_er['er']:.2f}% / フォロワー {top_er['followers']:.1f}万）。"
+                            f"ユーザーとの対話が上手なアカウントです。"
+                        ))
 
                     # レポートを表示
                     for box_type, msg in reports:
