@@ -424,25 +424,44 @@ else:
                 if not new_uname.strip():
                     st.markdown('<div class="err-box">ユーザー名は必須です</div>', unsafe_allow_html=True)
                 else:
-                    res = sb_insert("competitor_accounts", {
-                        "username":       new_uname.strip(),
-                        "platform":       "Instagram",
-                        "location":       new_loc if new_loc != "未設定" else None,
-                        "content_region": new_loc if new_loc != "未設定" else None,
-                        "region":         new_region.strip() or None,
-                        "category":       new_cat if new_cat != "未設定" else None,
-                        "content_genre":  new_cat if new_cat != "未設定" else None,
-                        "genre":          new_genre.strip() or None,
-                        "is_own":         new_is_own,
-                        "note":           new_note.strip() or None,
-                        "is_active":      True,
-                    })
-                    if res:
-                        own_msg = "（自社アカウント）" if new_is_own else "（競合アカウント）"
-                        st.markdown(f'<div class="success-box">登録しました {own_msg}</div>', unsafe_allow_html=True)
+                    # 既存アカウントの確認
+                    existing = df_acc[df_acc["username"] == new_uname.strip()] if not df_acc.empty else pd.DataFrame()
+                    if not existing.empty:
+                        # 既存アカウントの is_own フラグを更新
+                        eid = int(existing.iloc[0]["id"])
+                        sb_update("competitor_accounts", {
+                            "is_own":         new_is_own,
+                            "location":       new_loc if new_loc != "未設定" else None,
+                            "content_region": new_loc if new_loc != "未設定" else None,
+                            "region":         new_region.strip() or None,
+                            "category":       new_cat if new_cat != "未設定" else None,
+                            "content_genre":  new_cat if new_cat != "未設定" else None,
+                            "genre":          new_genre.strip() or None,
+                            "note":           new_note.strip() or None,
+                        }, {"id": eid})
+                        own_msg = "（自社アカウントとして更新）" if new_is_own else "（競合アカウントとして更新）"
+                        st.markdown(f'<div class="success-box">既存アカウントを更新しました {own_msg}</div>', unsafe_allow_html=True)
                         st.cache_data.clear(); st.rerun()
                     else:
-                        st.markdown('<div class="err-box">登録に失敗しました</div>', unsafe_allow_html=True)
+                        res = sb_insert("competitor_accounts", {
+                            "username":       new_uname.strip(),
+                            "platform":       "Instagram",
+                            "location":       new_loc if new_loc != "未設定" else None,
+                            "content_region": new_loc if new_loc != "未設定" else None,
+                            "region":         new_region.strip() or None,
+                            "category":       new_cat if new_cat != "未設定" else None,
+                            "content_genre":  new_cat if new_cat != "未設定" else None,
+                            "genre":          new_genre.strip() or None,
+                            "is_own":         new_is_own,
+                            "note":           new_note.strip() or None,
+                            "is_active":      True,
+                        })
+                        if res:
+                            own_msg = "（自社アカウント）" if new_is_own else "（競合アカウント）"
+                            st.markdown(f'<div class="success-box">登録しました {own_msg}</div>', unsafe_allow_html=True)
+                            st.cache_data.clear(); st.rerun()
+                        else:
+                            st.markdown('<div class="err-box">登録に失敗しました</div>', unsafe_allow_html=True)
 
     # ── タブ3: 自社 vs 競合比較 ───────────────────────────────────────────────
     with tab_compare:
@@ -451,29 +470,68 @@ else:
         elif df_comp.empty:
             st.markdown('<div class="info-box">競合アカウントが登録されていません。</div>', unsafe_allow_html=True)
         else:
-            # 年月フィルター
+            # 年月フィルター（session_stateで状態管理）
             st.markdown('<div class="section-head">期間を指定</div>', unsafe_allow_html=True)
+
+            # session_stateの初期化
+            if "cmp_period_mode" not in st.session_state:
+                st.session_state["cmp_period_mode"] = "全期間"
+            if "cmp_sel_year" not in st.session_state:
+                st.session_state["cmp_sel_year"] = None
+            if "cmp_sel_month" not in st.session_state:
+                st.session_state["cmp_sel_month"] = None
+
             period_tab1, period_tab2, period_tab3 = st.tabs(["全期間", "年別", "月別"])
 
             with period_tab1:
-                sel_year = None; sel_month = None
+                st.caption("全期間のデータを表示します")
+                if st.button("全期間で表示", key="period_all"):
+                    st.session_state["cmp_period_mode"] = "全期間"
+                    st.session_state["cmp_sel_year"]    = None
+                    st.session_state["cmp_sel_month"]   = None
+                    st.rerun()
+
             with period_tab2:
                 years = sorted(set(
                     df_hist["recorded_date"].astype(str).str[:4].dropna().tolist()
                 ), reverse=True) if not df_hist.empty else []
-                sel_year  = st.selectbox("年を選択", ["すべて"]+years, key="cmp_year") if years else None
-                sel_year  = None if sel_year == "すべて" else sel_year
-                sel_month = None
+                if years:
+                    y_sel = st.selectbox("年を選択", years, key="cmp_year_sel")
+                    if st.button("この年で絞り込む", key="period_year_btn"):
+                        st.session_state["cmp_period_mode"] = "年別"
+                        st.session_state["cmp_sel_year"]    = y_sel
+                        st.session_state["cmp_sel_month"]   = None
+                        st.rerun()
+                else:
+                    st.caption("月次データを入力すると年別絞り込みができます")
+
             with period_tab3:
-                cy1, cy2 = st.columns(2)
-                with cy1:
-                    years2 = sorted(set(df_hist["recorded_date"].astype(str).str[:4].dropna().tolist()), reverse=True) if not df_hist.empty else []
-                    sel_year2  = st.selectbox("年", ["すべて"]+years2, key="cmp_year2") if years2 else None
-                    sel_year   = None if sel_year2 == "すべて" else sel_year2
-                with cy2:
-                    months = [f"{m:02d}" for m in range(1,13)]
-                    sel_month2 = st.selectbox("月", ["すべて"]+months, key="cmp_month2")
-                    sel_month  = None if sel_month2 == "すべて" else sel_month2
+                years2 = sorted(set(
+                    df_hist["recorded_date"].astype(str).str[:4].dropna().tolist()
+                ), reverse=True) if not df_hist.empty else []
+                months = [f"{m:02d}" for m in range(1, 13)]
+                if years2:
+                    cy1, cy2 = st.columns(2)
+                    with cy1: y2_sel = st.selectbox("年", years2, key="cmp_year2_sel")
+                    with cy2: m2_sel = st.selectbox("月", months, key="cmp_month2_sel")
+                    if st.button("この月で絞り込む", key="period_month_btn"):
+                        st.session_state["cmp_period_mode"] = "月別"
+                        st.session_state["cmp_sel_year"]    = y2_sel
+                        st.session_state["cmp_sel_month"]   = m2_sel
+                        st.rerun()
+                else:
+                    st.caption("月次データを入力すると月別絞り込みができます")
+
+            # 現在の絞り込み状態を表示
+            sel_year  = st.session_state["cmp_sel_year"]
+            sel_month = st.session_state["cmp_sel_month"]
+            mode_label = st.session_state["cmp_period_mode"]
+            if sel_year and sel_month:
+                st.markdown(f'<div class="info-box">絞り込み中: <strong>{sel_year}年{sel_month}月</strong></div>', unsafe_allow_html=True)
+            elif sel_year:
+                st.markdown(f'<div class="info-box">絞り込み中: <strong>{sel_year}年</strong></div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="info-box">絞り込み: <strong>全期間</strong></div>', unsafe_allow_html=True)
 
             # 自社メトリクス
             own_metrics = []
