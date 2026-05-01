@@ -696,9 +696,63 @@ else:
 
     # ── タブ4: 市場・地域分析 ─────────────────────────────────────────────────
     with tab_market:
-        st.markdown('<div class="section-head">発信地を選択して分析</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-head">期間・発信地を指定して分析</div>', unsafe_allow_html=True)
 
-        # 発信地ボタン
+        # ── 期間フィルター（session_stateで管理）────────────────────────────
+        if "mkt_sel_year"  not in st.session_state: st.session_state["mkt_sel_year"]  = None
+        if "mkt_sel_month" not in st.session_state: st.session_state["mkt_sel_month"] = None
+
+        mkt_period_tab1, mkt_period_tab2, mkt_period_tab3 = st.tabs(["全期間", "年別", "月別"])
+
+        with mkt_period_tab1:
+            st.caption("全期間のデータを表示します")
+            if st.button("全期間で表示", key="mkt_period_all"):
+                st.session_state["mkt_sel_year"]  = None
+                st.session_state["mkt_sel_month"] = None
+                st.rerun()
+
+        with mkt_period_tab2:
+            mkt_years = sorted(set(
+                df_hist["recorded_date"].astype(str).str[:4].dropna().tolist()
+            ), reverse=True) if not df_hist.empty else []
+            if mkt_years:
+                my_sel = st.selectbox("年を選択", mkt_years, key="mkt_year_sel")
+                if st.button("この年で絞り込む", key="mkt_period_year_btn"):
+                    st.session_state["mkt_sel_year"]  = my_sel
+                    st.session_state["mkt_sel_month"] = None
+                    st.rerun()
+            else:
+                st.caption("月次データを入力すると年別絞り込みができます")
+
+        with mkt_period_tab3:
+            mkt_years2 = sorted(set(
+                df_hist["recorded_date"].astype(str).str[:4].dropna().tolist()
+            ), reverse=True) if not df_hist.empty else []
+            if mkt_years2:
+                my1, my2 = st.columns(2)
+                with my1: my2_sel = st.selectbox("年", mkt_years2, key="mkt_year2_sel")
+                with my2: mm_sel  = st.selectbox("月", [f"{m:02d}" for m in range(1,13)], key="mkt_month_sel")
+                if st.button("この月で絞り込む", key="mkt_period_month_btn"):
+                    st.session_state["mkt_sel_year"]  = my2_sel
+                    st.session_state["mkt_sel_month"] = mm_sel
+                    st.rerun()
+            else:
+                st.caption("月次データを入力すると月別絞り込みができます")
+
+        # 現在の期間
+        mkt_year  = st.session_state["mkt_sel_year"]
+        mkt_month = st.session_state["mkt_sel_month"]
+        if mkt_year and mkt_month:
+            mkt_period_label = f"{mkt_year}年{mkt_month}月"
+        elif mkt_year:
+            mkt_period_label = f"{mkt_year}年"
+        else:
+            mkt_period_label = "全期間"
+
+        st.markdown(f'<div class="info-box">集計期間: <strong>{mkt_period_label}</strong></div>', unsafe_allow_html=True)
+
+        # ── 発信地ボタン ─────────────────────────────────────────────────────
+        st.markdown("**発信地を選択（クリックで絞り込み）:**")
         all_locs = []
         if not df_acc.empty:
             for col in ["location","content_region"]:
@@ -709,8 +763,7 @@ else:
         if not all_locs:
             st.markdown('<div class="info-box">発信地が登録されているアカウントがありません</div>', unsafe_allow_html=True)
         else:
-            # ボタンで発信地選択
-            st.markdown("**発信地を選択（クリックで絞り込み）:**")
+
             if "sel_location" not in st.session_state:
                 st.session_state["sel_location"] = "すべて"
 
@@ -729,7 +782,7 @@ else:
             sel_loc = st.session_state["sel_location"]
             st.markdown(f"**選択中: {sel_loc}**")
 
-            # フィルター
+            # 発信地フィルター
             df_loc = df_acc.copy()
             if sel_loc != "すべて":
                 df_loc = df_loc[
@@ -744,7 +797,7 @@ else:
                 loc_rows = []
                 for _, row in df_loc.iterrows():
                     aid = int(row["id"])
-                    m   = get_metrics(aid, df_hist, df_posts)
+                    m   = get_metrics(aid, df_hist, df_posts, mkt_year, mkt_month)
                     if m["followers"] == 0: continue
                     loc_rows.append({
                         "username":   row["username"],
@@ -753,6 +806,8 @@ else:
                         "er":         m["er"],
                         "followers":  m["followers_raw"],
                         "growth":     m["growth"] or 0,
+                        "growth_from": m.get("growth_from",""),
+                        "growth_to":   m.get("growth_to",""),
                         "weekly_posts": m["weekly_posts"],
                     })
 
@@ -760,7 +815,19 @@ else:
                     df_loc_m = pd.DataFrame(loc_rows)
                     df_loc_m["種別"] = df_loc_m["is_own"].map({True:"🏠 自社", False:"🔍 競合"})
 
-                    st.markdown(f'<div class="section-head">{sel_loc} のアカウント分析（{len(df_loc_m)}件）</div>', unsafe_allow_html=True)
+                    # 比較期間ラベルを生成（データから取得）
+                    growth_froms = [r for r in df_loc_m["growth_from"].tolist() if r]
+                    growth_tos   = [r for r in df_loc_m["growth_to"].tolist()   if r]
+                    growth_period = ""
+                    if growth_froms and growth_tos:
+                        growth_period = f"（増加率: {min(growth_froms)}→{max(growth_tos)}）"
+
+                    st.markdown(
+                        f'<div class="section-head">{sel_loc} のアカウント分析　'
+                        f'<span style="font-size:.8rem;color:#6b7280;">{mkt_period_label} {growth_period}</span>'
+                        f'（{len(df_loc_m)}件）</div>',
+                        unsafe_allow_html=True
+                    )
 
                     # サマリー
                     avg_er  = df_loc_m["er"].mean()
