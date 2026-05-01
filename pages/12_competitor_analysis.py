@@ -627,16 +627,14 @@ else:
 
                     # 自社=赤、競合=青 で色分けしたデータを作成
                     def colored_bar(df_data, col, title):
-                        """自社を赤、競合を青で棒グラフ表示"""
+                        """自社と競合を分けて棒グラフ表示"""
                         st.markdown(f"**{title}**")
-                        # 自社と競合を分けて表示
                         own_data  = df_data[df_data.index.str.startswith("🏠")][col]
                         comp_data = df_data[df_data.index.str.startswith("🔍")][col]
                         if not own_data.empty and not comp_data.empty:
-                            # 両方ある場合は並べて表示
                             combined = pd.DataFrame({
-                                "🏠 自社（赤）":   own_data,
-                                "🔍 競合（青）": comp_data,
+                                "🏠 自社":  own_data,
+                                "🔍 競合": comp_data,
                             })
                             st.bar_chart(combined)
                         elif not own_data.empty:
@@ -746,8 +744,75 @@ else:
                       <div class="metric-card"><div class="val">{len(df_loc_m)}</div><div class="lbl">アカウント数</div></div>
                       <div class="metric-card"><div class="val">{avg_er:.2f}%</div><div class="lbl">平均ER</div></div>
                       <div class="metric-card"><div class="val">{avg_fw:.1f}万</div><div class="lbl">平均フォロワー</div></div>
-                      <div class="metric-card"><div class="val">{avg_gr:+.1f}%</div><div class="lbl">平均増加率</div></div>
+                      <div class="metric-card"><div class="val">{avg_gr:+.1f}%</div><div class="lbl">平均増加率（前月比）</div></div>
                     </div>""", unsafe_allow_html=True)
+
+                    # ── 市場分析テキストレポート（自動生成）─────────────────
+                    st.markdown('<div class="section-head">市場分析レポート</div>', unsafe_allow_html=True)
+                    growing     = df_loc_m[df_loc_m["growth"] > 3]
+                    shrinking   = df_loc_m[df_loc_m["growth"] < -3]
+                    high_er     = df_loc_m[df_loc_m["er"] > 3]
+                    low_er      = df_loc_m[df_loc_m["er"] < 1]
+                    top_acc     = df_loc_m.sort_values("growth", ascending=False).iloc[0] if not df_loc_m.empty else None
+                    bottom_acc  = df_loc_m.sort_values("growth").iloc[0] if not df_loc_m.empty else None
+
+                    reports = []
+
+                    # 市場全体の状況
+                    if avg_gr > 5:
+                        reports.append(("success", f"📈 **{sel_loc}市場は拡大中**です。平均フォロワー増加率 {avg_gr:+.1f}%（前月比）と高い成長率を示しています。積極的なコンテンツ投資を検討してください。"))
+                    elif avg_gr > 0:
+                        reports.append(("info", f"📊 **{sel_loc}市場は緩やかに成長中**です。平均増加率 {avg_gr:+.1f}%（前月比）。市場は安定していますが、差別化が重要です。"))
+                    elif avg_gr > -3:
+                        reports.append(("info", f"📉 **{sel_loc}市場は横ばい**です。平均増加率 {avg_gr:+.1f}%（前月比）。新しいコンテンツ戦略の検討を推奨します。"))
+                    else:
+                        reports.append(("err", f"⚠️ **{sel_loc}市場は全体的に収縮中**です。平均増加率 {avg_gr:+.1f}%（前月比）。フォロワーが減少傾向にあり、市場の飽和または競合激化が考えられます。"))
+
+                    # 成長しているアカウント
+                    if not growing.empty:
+                        names = "、".join(growing["username"].tolist())
+                        reports.append(("success", f"✅ **成長中のアカウント（+3%超）:** {names}。これらのコンテンツ戦略を参考にしてください。"))
+
+                    # 減少しているアカウント
+                    if not shrinking.empty:
+                        names = "、".join(shrinking["username"].tolist())
+                        reports.append(("err", f"⚠️ **フォロワー減少中（-3%超）:** {names}。コンテンツの見直しが必要な可能性があります。"))
+
+                    # ER分析
+                    if avg_er > 3:
+                        reports.append(("success", f"💬 **エンゲージメント率が高い市場**です（平均 {avg_er:.2f}%）。ユーザーの関心が高く、コメント・いいねが活発です。"))
+                    elif avg_er < 1:
+                        reports.append(("err", f"💬 **エンゲージメント率が低い市場**です（平均 {avg_er:.2f}%）。フォロワーの反応が薄く、投稿内容や投稿時間の改善を検討してください。"))
+
+                    # トップアカウント
+                    if top_acc is not None and top_acc["growth"] > 0:
+                        reports.append(("info", f"🏆 **最も成長中:** @{top_acc['username']}（前月比 {top_acc['growth']:+.1f}%）。このアカウントの投稿スタイル・頻度・テーマを参考にしてください。"))
+
+                    # レポートを表示
+                    for box_type, msg in reports:
+                        css_class = "success-box" if box_type == "success" else ("err-box" if box_type == "err" else "info-box")
+                        st.markdown(f'<div class="{css_class}">{msg}</div>', unsafe_allow_html=True)
+
+                    # 全地域比較（すべて選択時のみ）
+                    if sel_loc == "すべて" and len(df_loc_m) >= 3:
+                        st.markdown('<div class="section-head">発信地別サマリー</div>', unsafe_allow_html=True)
+                        loc_summary = df_loc_m.groupby("location").agg(
+                            アカウント数=("username","count"),
+                            平均ER=("er","mean"),
+                            平均増加率=("growth","mean"),
+                        ).round(2).sort_values("平均増加率", ascending=False)
+                        st.dataframe(loc_summary, use_container_width=True)
+                        best_loc  = loc_summary["平均増加率"].idxmax()
+                        worst_loc = loc_summary["平均増加率"].idxmin()
+                        st.markdown(
+                            f'<div class="success-box">📍 最も成長している地域: <strong>{best_loc}</strong>（平均 {loc_summary.loc[best_loc,"平均増加率"]:+.1f}%）</div>',
+                            unsafe_allow_html=True
+                        )
+                        if worst_loc != best_loc:
+                            st.markdown(
+                                f'<div class="err-box">📍 最も伸び悩んでいる地域: <strong>{worst_loc}</strong>（平均 {loc_summary.loc[worst_loc,"平均増加率"]:+.1f}%）</div>',
+                                unsafe_allow_html=True
+                            )
 
                     df_loc_m["label"] = df_loc_m.apply(
                         lambda r: f"{'🏠' if r['is_own'] else '🔍'} {r['username']}", axis=1
@@ -757,7 +822,7 @@ else:
                         st.markdown("**ER比較(%)**")
                         st.bar_chart(df_loc_m.set_index("label")["er"])
                     with lb:
-                        st.markdown("**フォロワー増加率(%)**")
+                        st.markdown("**フォロワー増加率（前月比%）**")
                         st.bar_chart(df_loc_m.set_index("label")["growth"])
 
                     st.dataframe(
