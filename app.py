@@ -138,6 +138,14 @@ with c3:
     if st.button("セッション分析\n\nAI利用者のセッション一覧\nWhatsAppクリック追跡\nプロ依頼の管理\n\n→ /concierge_whitelist", key="nav_sessions"):
         st.switch_page("pages/14_concierge_whitelist.py")
 
+# ── Travel Demand Cloud ───────────────────────────────────────────────────────
+st.markdown('<div class="cat-label">Travel Demand Cloud</div>', unsafe_allow_html=True)
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    if st.button("旅行需要スコア\n\n自社×市場の統合需要指標\n地域別需要分析\n需要インサイト自動生成\n\n→ /travel_demand", key="nav_demand"):
+        st.switch_page("pages/15_travel_demand.py")
+
 st.markdown("""
 <div style="text-align:center;margin-top:2.5rem;padding-top:1.5rem;border-top:1px solid #e5e7eb;">
   <span style="font-size:.72rem;color:#d1d5db;letter-spacing:1px;">Tabibiyori Dashboard — Japan Content Operations</span>
