@@ -320,3 +320,115 @@ try:
         st.markdown('<div class="info-box">スコアを保存すると推移グラフが表示されます</div>', unsafe_allow_html=True)
 except Exception:
     st.markdown('<div class="info-box">demand_scoresテーブルを作成してください</div>', unsafe_allow_html=True)
+
+# ════════════════════════════════════════════════════════
+# 既存データ活用：季節性・カテゴリー別需要分析
+# ════════════════════════════════════════════════════════
+st.markdown("---")
+st.markdown('<div class="page-title" style="font-size:1.4rem;">需要パターン分析（過去データ）</div>', unsafe_allow_html=True)
+st.caption("購買履歴・DM履歴から需要の季節性・傾向を分析します")
+
+# ── ① 月別需要パターン（季節性）──────────────────────────────────────────────
+st.markdown('<div class="section-head">月別需要パターン（季節性）</div>', unsafe_allow_html=True)
+if not purchases.empty:
+    pur = purchases.copy()
+    pur["purchase_date"] = pd.to_datetime(pur["purchase_date"], errors="coerce")
+    pur = pur.dropna(subset=["purchase_date"])
+    pur["amount"] = pd.to_numeric(pur["amount"], errors="coerce").fillna(0)
+    # キャンセル除外
+    if "tour_status" in pur.columns:
+        pur = pur[pur["tour_status"] != "キャンセル"]
+    # Patreon除外
+    if "product_type" in pur.columns:
+        pur = pur[pur["product_type"] != "Patreon"]
+
+    pur["month"] = pur["purchase_date"].dt.month
+    monthly_demand = pur.groupby("month").agg(
+        購買件数=("amount", "count"),
+        売上=("amount", "sum"),
+        平均単価=("amount", "mean"),
+    ).round(0)
+    # 1-12月を網羅
+    monthly_demand = monthly_demand.reindex(range(1, 13), fill_value=0)
+    monthly_demand.index = [f"{m}月" for m in monthly_demand.index]
+
+    st.bar_chart(monthly_demand["購買件数"])
+
+    # 最需要月を特定
+    if monthly_demand["購買件数"].sum() > 0:
+        peak_month = monthly_demand["購買件数"].idxmax()
+        low_month  = monthly_demand[monthly_demand["購買件数"] > 0]["購買件数"].idxmin() if (monthly_demand["購買件数"] > 0).any() else "—"
+        st.markdown(
+            f'<div class="success-box">📈 最も需要が高い月: <strong>{peak_month}</strong>'
+            f'（{int(monthly_demand.loc[peak_month, "購買件数"])}件） &nbsp; '
+            f'閑散期: <strong>{low_month}</strong></div>',
+            unsafe_allow_html=True
+        )
+    st.dataframe(monthly_demand, use_container_width=True)
+else:
+    st.markdown('<div class="info-box">購買データが蓄積されると季節性が分析できます</div>', unsafe_allow_html=True)
+
+# ── ② カテゴリー別需要トレンド ────────────────────────────────────────────────
+st.markdown('<div class="section-head">商品カテゴリー別 需要トレンド</div>', unsafe_allow_html=True)
+if not purchases.empty:
+    pur2 = purchases.copy()
+    pur2["purchase_date"] = pd.to_datetime(pur2["purchase_date"], errors="coerce")
+    pur2 = pur2.dropna(subset=["purchase_date"])
+    pur2["amount"] = pd.to_numeric(pur2["amount"], errors="coerce").fillna(0)
+    if "tour_status" in pur2.columns:
+        pur2 = pur2[pur2["tour_status"] != "キャンセル"]
+    pur2["ym"] = pur2["purchase_date"].dt.to_period("M").astype(str)
+
+    if "product_type" in pur2.columns and not pur2.empty:
+        cat_trend = pur2.groupby(["ym", "product_type"])["amount"].count().reset_index(name="件数")
+        cat_pivot = cat_trend.pivot(index="ym", columns="product_type", values="件数").fillna(0)
+        if not cat_pivot.empty:
+            st.line_chart(cat_pivot)
+            st.caption("カテゴリー別の購買件数推移。需要がどのカテゴリーにシフトしているか把握できます。")
+else:
+    st.markdown('<div class="info-box">データ蓄積中</div>', unsafe_allow_html=True)
+
+# ── ③ 時間帯別関心（最適投稿時間）────────────────────────────────────────────
+st.markdown('<div class="section-head">時間帯別 関心度（最適投稿時間の推定）</div>', unsafe_allow_html=True)
+try:
+    hourly_raw = to_df(sb_select("dm_hourly_monthly", order="hour", columns="id,year_month,platform,hour,dm_count"))
+    if not hourly_raw.empty:
+        if "dm_count" in hourly_raw.columns:
+            hourly_raw = hourly_raw.rename(columns={"dm_count": "count"})
+        hourly_raw["hour"]  = pd.to_numeric(hourly_raw["hour"],  errors="coerce").fillna(0).astype(int)
+        hourly_raw["count"] = pd.to_numeric(hourly_raw["count"], errors="coerce").fillna(0).astype(int)
+        hourly_agg = hourly_raw.groupby("hour")["count"].sum().reindex(range(24), fill_value=0)
+        st.bar_chart(hourly_agg)
+
+        peak_hour = int(hourly_agg.idxmax())
+        st.markdown(
+            f'<div class="success-box">⏰ 最も関心が高い時間帯: <strong>{peak_hour:02d}:00</strong> &nbsp; '
+            f'推奨投稿時間: <strong>{max(peak_hour-1,0):02d}:00〜{peak_hour:02d}:00</strong>（ピークの直前）</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown('<div class="info-box">時間帯データが蓄積されると表示されます</div>', unsafe_allow_html=True)
+except Exception:
+    st.markdown('<div class="info-box">時間帯データ取得中</div>', unsafe_allow_html=True)
+
+# ── ④ 流入チャネル別 顧客分析 ────────────────────────────────────────────────
+st.markdown('<div class="section-head">流入チャネル別 顧客構成</div>', unsafe_allow_html=True)
+try:
+    custs = to_df(sb_select("customers", order="-created_at"))
+    if not custs.empty and "platform" in custs.columns:
+        platform_dist = custs["platform"].fillna("不明").value_counts()
+        pc1, pc2 = st.columns([1, 1])
+        with pc1:
+            st.bar_chart(platform_dist)
+        with pc2:
+            st.markdown("**チャネル別顧客数**")
+            for plat, cnt in platform_dist.items():
+                pct = round(cnt / len(custs) * 100, 1)
+                st.markdown(f"- {plat}: **{cnt}名**（{pct}%）")
+        st.markdown(
+            '<div class="info-box">💡 将来的に顧客の「国籍」を記録すると、地域別の旅行需要分析が可能になります。'
+            'AI Conciergeのデータ収集を開始すると自動化できます。</div>',
+            unsafe_allow_html=True
+        )
+except Exception:
+    st.markdown('<div class="info-box">顧客データ取得中</div>', unsafe_allow_html=True)
