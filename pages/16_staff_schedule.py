@@ -28,6 +28,15 @@ STATUS_MAP = {
 }
 HOURS = list(range(8, 22))  # 8:00〜21:00表示
 
+# 休日種類の定義
+HOLIDAY_TYPES = {
+    "regular":     ("通常休日",   "休"),
+    "paid":        ("有給休暇",   "有"),
+    "bereavement": ("忌引き",     "忌"),
+    "special":     ("特別休暇",   "慶事"),
+    "half":        ("半休",       "半"),
+}
+
 # ── ヘルパー ──────────────────────────────────────────────────────────────────
 def parse_json_field(val, default):
     if val is None: return default
@@ -116,23 +125,44 @@ def get_workday_v2(staff_row, target_date, workdays_df, holidays_df):
             return True, row.get("start_time"), row.get("end_time")
 
     if emp_type == "fulltime":
-        # 正社員: 休日登録がなければ出勤
-        is_holiday = False
+        # 正社員: 休日登録を確認
         if not holidays_df.empty:
             hd = holidays_df[
                 (holidays_df["staff_id"] == sid) &
                 (holidays_df["holiday_date"].astype(str) == str(target_date))
             ]
-            is_holiday = not hd.empty
-        if is_holiday:
-            return False, None, None
-        # 出勤（デフォルト勤務時間）
+            if not hd.empty:
+                htype = hd.iloc[0].get("holiday_type", "regular") or "regular"
+                if htype == "half":
+                    # 半休: 休みの時間帯以外を勤務にする（簡易的にデフォルト勤務時間を返す）
+                    # タイムライン側で半休時間帯を「休み」として重ねて表示
+                    d_start = staff_row.get("default_start", "10:00") or "10:00"
+                    d_end   = staff_row.get("default_end", "19:00") or "19:00"
+                    return True, d_start, d_end
+                else:
+                    # 通常休日・有給・忌引き・特別休暇は終日休み
+                    return False, None, None
+        # 休日登録なし → 出勤（デフォルト勤務時間）
         d_start = staff_row.get("default_start", "10:00") or "10:00"
         d_end   = staff_row.get("default_end", "19:00") or "19:00"
         return True, d_start, d_end
     else:
         # アルバイト・業務委託: staff_work_days に登録がなければ休み
         return False, None, None
+
+def get_holiday_info(staff_id, target_date, holidays_df):
+    """指定日の休日情報を返す。戻り: (種類, 略号, 半休開始, 半休終了) or None"""
+    if holidays_df.empty: return None
+    hd = holidays_df[
+        (holidays_df["staff_id"] == staff_id) &
+        (holidays_df["holiday_date"].astype(str) == str(target_date))
+    ]
+    if hd.empty: return None
+    row = hd.iloc[0]
+    htype = row.get("holiday_type", "regular") or "regular"
+    label, short = HOLIDAY_TYPES.get(htype, ("休日", "休"))
+    return {"type": htype, "label": label, "short": short,
+            "half_start": row.get("half_start"), "half_end": row.get("half_end")}
 
 def get_task_color(task_name, tasks_df):
     if not tasks_df.empty:
@@ -669,15 +699,25 @@ with tab_calendar:
                 is_work, _, _ = get_workday_v2(s, d, workdays_df, holidays_df)
                 ev_count = event_set.get((sid, dstr), 0)
                 if is_work:
-                    work_count += 1
-                    # 出勤（予定があれば数を表示）
-                    if ev_count > 0:
-                        html += f'<td style="background:#dbeafe;text-align:center;padding:4px;border:1px solid #ddd;color:#1e3a5f;font-weight:700;" title="{ev_count}件の予定">●<br><span style="font-size:.6rem;">{ev_count}</span></td>'
+                    # 半休チェック
+                    hinfo = get_holiday_info(sid, d, holidays_df)
+                    if hinfo and hinfo["type"] == "half":
+                        work_count += 1  # 半休は0.5だが表示上は出勤としてカウント
+                        html += f'<td style="background:#fed7aa;text-align:center;padding:4px;border:1px solid #ddd;color:#c2410c;font-weight:700;" title="半休">半</td>'
                     else:
-                        html += '<td style="background:#ecfdf5;text-align:center;padding:4px;border:1px solid #ddd;color:#15803d;">●</td>'
+                        work_count += 1
+                        # 出勤（予定があれば数を表示）
+                        if ev_count > 0:
+                            html += f'<td style="background:#dbeafe;text-align:center;padding:4px;border:1px solid #ddd;color:#1e3a5f;font-weight:700;" title="{ev_count}件の予定">●<br><span style="font-size:.6rem;">{ev_count}</span></td>'
+                        else:
+                            html += '<td style="background:#ecfdf5;text-align:center;padding:4px;border:1px solid #ddd;color:#15803d;">●</td>'
                 else:
-                    # 休み（予定があれば休日出勤扱いで表示）
-                    if ev_count > 0:
+                    # 休み（種類別に略号を表示）
+                    hinfo = get_holiday_info(sid, d, holidays_df)
+                    if hinfo and hinfo["type"] != "regular":
+                        # 有給・忌引き・特別休暇は略号表示
+                        html += f'<td style="background:#fee2e2;text-align:center;padding:4px;border:1px solid #ddd;color:#dc2626;font-weight:700;font-size:.65rem;" title="{hinfo["label"]}">{hinfo["short"]}</td>'
+                    elif ev_count > 0:
                         html += f'<td style="background:#fef3c7;text-align:center;padding:4px;border:1px solid #ddd;color:#d97706;font-weight:700;" title="休日出勤 {ev_count}件">▲</td>'
                     else:
                         html += '<td style="background:#f9fafb;text-align:center;padding:4px;border:1px solid #ddd;color:#d1d5db;">-</td>'
@@ -688,21 +728,56 @@ with tab_calendar:
         # 凡例
         st.markdown('<div style="margin-top:12px;font-size:.75rem;color:#6b7280;">凡例: '
                     '<span style="background:#ecfdf5;color:#15803d;padding:2px 8px;">● 出勤</span> '
-                    '<span style="background:#dbeafe;color:#1e3a5f;padding:2px 8px;">● 出勤+予定あり(数字)</span> '
+                    '<span style="background:#dbeafe;color:#1e3a5f;padding:2px 8px;">● 出勤+予定(数字)</span> '
+                    '<span style="background:#fed7aa;color:#c2410c;padding:2px 8px;">半 半休</span> '
+                    '<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;">有/忌/慶事 特別休暇</span> '
                     '<span style="background:#fef3c7;color:#d97706;padding:2px 8px;">▲ 休日出勤</span> '
-                    '<span style="background:#f9fafb;color:#9ca3af;padding:2px 8px;">- 休み</span></div>',
+                    '<span style="background:#f9fafb;color:#9ca3af;padding:2px 8px;">- 通常休</span></div>',
                     unsafe_allow_html=True)
 
         # その月の集計
         st.markdown('<div class="section-head">月間サマリー</div>', unsafe_allow_html=True)
+        # その月の休日をstaff別・種類別に集計
+        month_start_str = str(days[0]); month_end_str = str(days[-1])
         summary_rows = []
         for _, s in active_staff_cal.iterrows():
             sid = int(s["id"])
-            wc = sum(1 for d in days if get_workday_v2(s, d, workdays_df, holidays_df)[0])
+            wc = sum(1 for d in days if get_workday_v2(s, d, workdays_df, holidays_df)[0]
+                     and not (get_holiday_info(sid, d, holidays_df) or {}).get("type") == "half")
+            half_c = sum(1 for d in days if (get_holiday_info(sid, d, holidays_df) or {}).get("type") == "half")
             ec = sum(event_set.get((sid, str(d)), 0) for d in days)
-            summary_rows.append({"従業員": s["name"], "出勤日数": wc, "予定件数": ec})
+            # 休日種類別カウント
+            paid_c = bereave_c = special_c = 0
+            if not holidays_df.empty:
+                sh = holidays_df[
+                    (holidays_df["staff_id"] == sid) &
+                    (holidays_df["holiday_date"].astype(str) >= month_start_str) &
+                    (holidays_df["holiday_date"].astype(str) <= month_end_str)
+                ]
+                for _, h in sh.iterrows():
+                    ht = h.get("holiday_type", "regular") or "regular"
+                    if ht == "paid": paid_c += 1
+                    elif ht == "bereavement": bereave_c += 1
+                    elif ht == "special": special_c += 1
+            summary_rows.append({
+                "従業員": s["name"],
+                "出勤日数": wc,
+                "半休": half_c,
+                "有給": paid_c,
+                "忌引き": bereave_c,
+                "特別休暇": special_c,
+                "予定件数": ec,
+            })
         if summary_rows:
             st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+            # 全体の休暇集計
+            df_sum = pd.DataFrame(summary_rows)
+            st.markdown(f"""<div class="metric-row">
+              <div class="metric-card"><div class="val">{int(df_sum["有給"].sum())}</div><div class="lbl">有給休暇（合計）</div></div>
+              <div class="metric-card"><div class="val">{int(df_sum["半休"].sum())}</div><div class="lbl">半休（合計）</div></div>
+              <div class="metric-card"><div class="val">{int(df_sum["忌引き"].sum())}</div><div class="lbl">忌引き（合計）</div></div>
+              <div class="metric-card"><div class="val">{int(df_sum["特別休暇"].sum())}</div><div class="lbl">特別休暇（合計）</div></div>
+            </div>""", unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════
 # タブ3: 従業員管理（勤務時間廃止・出勤日登録方式）
@@ -797,12 +872,24 @@ with tab_staff:
         else:
             ft_options = {s["name"]: int(s["id"]) for _, s in fulltime_staff.iterrows()}
             with st.form(key="add_holiday_form"):
-                hc1, hc2, hc3 = st.columns([2, 2, 1])
-                with hc1: hd_staff = st.selectbox("従業員 *", list(ft_options.keys()), key="hd_staff")
-                with hc2: hd_date  = st.date_input("休日 *", value=date.today(), key="hd_date")
-                with hc3:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    hd_submit = st.form_submit_button("休日を登録")
+                hc1, hc2 = st.columns(2)
+                with hc1:
+                    hd_staff = st.selectbox("従業員 *", list(ft_options.keys()), key="hd_staff")
+                    hd_date  = st.date_input("休日 *", value=date.today(), key="hd_date")
+                with hc2:
+                    hd_type = st.selectbox("休日種類 *",
+                        list(HOLIDAY_TYPES.keys()),
+                        format_func=lambda x: f"{HOLIDAY_TYPES[x][0]}（{HOLIDAY_TYPES[x][1]}）",
+                        key="hd_type")
+                    # 半休の場合のみ時間入力
+                    if hd_type == "half":
+                        hhc1, hhc2 = st.columns(2)
+                        with hhc1: hd_hstart = st.time_input("半休開始", value=time_type(10,0), key="hd_hstart")
+                        with hhc2: hd_hend   = st.time_input("半休終了", value=time_type(14,0), key="hd_hend")
+                    else:
+                        hd_hstart = None; hd_hend = None
+
+                hd_submit = st.form_submit_button("休日を登録")
                 if hd_submit:
                     sid = ft_options[hd_staff]
                     existing_hd = pd.DataFrame()
@@ -811,12 +898,22 @@ with tab_staff:
                             (holidays_df["staff_id"] == sid) &
                             (holidays_df["holiday_date"].astype(str) == str(hd_date))
                         ]
+                    payload = {
+                        "staff_id":     sid,
+                        "holiday_date": str(hd_date),
+                        "holiday_type": hd_type,
+                        "half_start":   fmt_time(hd_hstart) if hd_hstart else None,
+                        "half_end":     fmt_time(hd_hend) if hd_hend else None,
+                    }
                     if existing_hd.empty:
-                        sb_insert("staff_holidays", {"staff_id": sid, "holiday_date": str(hd_date)})
-                        st.markdown(f'<div class="success-box">{hd_staff}さんの{hd_date}を休日として登録しました</div>', unsafe_allow_html=True)
+                        sb_insert("staff_holidays", payload)
+                        st.markdown(f'<div class="success-box">{hd_staff}さんの{hd_date}を「{HOLIDAY_TYPES[hd_type][0]}」として登録しました</div>', unsafe_allow_html=True)
                         st.cache_data.clear(); st.rerun()
                     else:
-                        st.markdown('<div class="info-box">既に休日として登録されています</div>', unsafe_allow_html=True)
+                        # 既存があれば更新
+                        sb_update("staff_holidays", payload, {"id": int(existing_hd.iloc[0]["id"])})
+                        st.markdown(f'<div class="success-box">{hd_staff}さんの{hd_date}を「{HOLIDAY_TYPES[hd_type][0]}」に更新しました</div>', unsafe_allow_html=True)
+                        st.cache_data.clear(); st.rerun()
 
             # 登録済み休日一覧
             if not holidays_df.empty:
@@ -832,9 +929,14 @@ with tab_staff:
                         hd_sname = "不明"
                         sm = fulltime_staff[fulltime_staff["id"] == hd["staff_id"]]
                         if not sm.empty: hd_sname = sm.iloc[0]["name"]
+                        htype = hd.get("holiday_type", "regular") or "regular"
+                        htype_label = HOLIDAY_TYPES.get(htype, ("休日","休"))[0]
+                        half_info = ""
+                        if htype == "half" and hd.get("half_start"):
+                            half_info = f" {fmt_time(hd.get('half_start'))}〜{fmt_time(hd.get('half_end'))}"
                         hc1, hc2 = st.columns([4, 1])
                         with hc1:
-                            st.caption(f"{hd_sname} — {hd['holiday_date']}")
+                            st.caption(f"{hd_sname} — {hd['holiday_date']} 【{htype_label}】{half_info}")
                         with hc2:
                             if st.button("削除", key=f"delhd_{hdid}"):
                                 sb_delete("staff_holidays", {"id": hdid})
