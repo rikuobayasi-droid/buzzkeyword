@@ -65,7 +65,30 @@ def load_all():
     staff    = to_df(sb_select("staff_members",    order="name"))
     events   = to_df(sb_select("staff_events",     order="event_date"))
     workdays = to_df(sb_select("staff_work_days",  order="work_date"))
-    return tasks, staff, events, workdays
+    try:
+        breaks = to_df(sb_select("staff_breaks", order="break_date"))
+    except Exception:
+        breaks = pd.DataFrame()
+    return tasks, staff, events, workdays, breaks
+
+def get_event_breaks(event_id, breaks_df):
+    """指定予定の休憩リストを返す"""
+    if breaks_df.empty: return pd.DataFrame()
+    return breaks_df[breaks_df["event_id"] == event_id]
+
+def hour_in_break(h, event_id, breaks_df):
+    """指定時刻hがその予定の休憩時間内か判定"""
+    eb = get_event_breaks(event_id, breaks_df)
+    if eb.empty: return False
+    for _, br in eb.iterrows():
+        bs = time_to_float(br.get("start_time"))
+        be = time_to_float(br.get("end_time"))
+        # 休憩中（終了未定）の場合は開始以降すべて休憩扱い
+        if bs is not None and be is None and bool(br.get("is_ongoing", False)):
+            if h >= bs: return True
+        elif bs is not None and be is not None:
+            if bs <= h < be: return True
+    return False
 
 def get_task_color(task_name, tasks_df):
     if not tasks_df.empty:
@@ -85,7 +108,7 @@ def get_workday(staff_id, target_date, workdays_df):
     return True, row.get("start_time"), row.get("end_time")
 
 # ════════════════════════════════════════════════════════
-tasks_df, staff_df, events_df, workdays_df = load_all()
+tasks_df, staff_df, events_df, workdays_df, breaks_df = load_all()
 
 st.markdown('<div class="page-title">スタッフ・スケジュール管理</div>', unsafe_allow_html=True)
 
@@ -226,8 +249,9 @@ with tab_timeline:
                                     slot_events.append(ev)
                         if slot_events:
                             ev = slot_events[0]
-                            # 休憩中なら休憩表示
-                            if bool(ev.get("on_break", False)):
+                            eid_check = int(ev["id"])
+                            # この時刻が休憩時間内かチェック（休憩テーブルベース）
+                            if hour_in_break(h, eid_check, breaks_df):
                                 row_html += '<div style="flex:1;background:#f59e0b;color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="休憩中">🍽️休憩</div>'
                             else:
                                 color = get_task_color(ev["task_type"], tasks_df)
@@ -264,13 +288,24 @@ with tab_timeline:
                         for _, ev in s_events.iterrows():
                             color = get_task_color(ev["task_type"], tasks_df)
                             loc = f' 📍{ev["location"]}' if ev.get("location") else ''
-                            break_tag = ' <span style="color:#f59e0b;font-weight:700;">🍽️休憩中</span>' if bool(ev.get("on_break", False)) else ''
                             st.markdown(
                                 f'<div style="display:flex;align-items:center;padding:6px 12px;margin:2px 0 2px 16px;border-left:4px solid {color};background:#fafafa;">'
                                 f'<span style="font-weight:600;color:{color};min-width:90px;">{fmt_time(ev["planned_start"])}〜{fmt_time(ev["planned_end"])}</span>'
-                                f'<span style="margin-left:8px;">{ev["task_type"]}{loc}{break_tag}</span></div>',
+                                f'<span style="margin-left:8px;">{ev["task_type"]}{loc}</span></div>',
                                 unsafe_allow_html=True
                             )
+                            # この予定の休憩を表示
+                            ev_breaks = get_event_breaks(int(ev["id"]), breaks_df)
+                            if not ev_breaks.empty:
+                                for _, br in ev_breaks.iterrows():
+                                    bs = fmt_time(br.get("start_time"))
+                                    be = fmt_time(br.get("end_time")) if br.get("end_time") else "（休憩中）"
+                                    st.markdown(
+                                        f'<div style="display:flex;align-items:center;padding:4px 12px;margin:2px 0 2px 32px;border-left:4px solid #f59e0b;background:#fffbeb;">'
+                                        f'<span style="font-weight:600;color:#f59e0b;min-width:90px;">{bs}〜{be}</span>'
+                                        f'<span style="margin-left:8px;">🍽️ 休憩</span></div>',
+                                        unsafe_allow_html=True
+                                    )
                     else:
                         st.markdown('<div style="padding:4px 12px 4px 16px;color:#9ca3af;font-size:.8rem;">予定なし（終日空き）</div>', unsafe_allow_html=True)
 
@@ -287,10 +322,12 @@ with tab_timeline:
                 status_label, status_color = STATUS_MAP.get(ev.get("status","confirmed"), ("", "#000"))
                 actual_s = fmt_time(ev.get("actual_start")) if ev.get("actual_start") else "—"
                 actual_e = fmt_time(ev.get("actual_end")) if ev.get("actual_end") else "—"
-                on_break = bool(ev.get("on_break", False))
-                break_s  = fmt_time(ev.get("break_start")) if ev.get("break_start") else "—"
-                break_e  = fmt_time(ev.get("break_end")) if ev.get("break_end") else "—"
-                break_badge = " 🍽️休憩中" if on_break else ""
+
+                # この予定の休憩を取得
+                ev_breaks = get_event_breaks(eid, breaks_df)
+                ongoing_break = ev_breaks[ev_breaks["is_ongoing"] == True] if not ev_breaks.empty else pd.DataFrame()
+                is_on_break = not ongoing_break.empty
+                break_badge = " 🍽️休憩中" if is_on_break else ""
 
                 with st.expander(f'{staff_name} | {ev["task_type"]} | {fmt_time(ev["planned_start"])}〜{fmt_time(ev["planned_end"])} | {status_label}{break_badge}'):
                     dc1, dc2 = st.columns(2)
@@ -303,37 +340,76 @@ with tab_timeline:
                     with dc2:
                         st.markdown(f"**実績開始:** {actual_s}")
                         st.markdown(f"**実績終了:** {actual_e}")
-                        st.markdown(f"**休憩:** {break_s} 〜 {break_e}")
                         st.markdown(f"**ステータス:** <span style='color:{status_color};'>{status_label}</span>", unsafe_allow_html=True)
-                        if on_break:
-                            st.markdown('<span style="color:#d97706;font-weight:700;">🍽️ 現在休憩中</span>', unsafe_allow_html=True)
+                        if is_on_break:
+                            st.markdown('<span style="color:#f59e0b;font-weight:700;">🍽️ 現在休憩中</span>', unsafe_allow_html=True)
 
-                    # 開始・終了・休憩ボタン
-                    bc1, bc2, bc3 = st.columns(3)
+                    # 登録済み休憩の一覧
+                    if not ev_breaks.empty:
+                        st.markdown("**休憩記録:**")
+                        for _, br in ev_breaks.iterrows():
+                            brid = int(br["id"])
+                            bs = fmt_time(br.get("start_time"))
+                            be = fmt_time(br.get("end_time")) if br.get("end_time") else "（休憩中）"
+                            brc1, brc2 = st.columns([4, 1])
+                            with brc1:
+                                st.caption(f"🍽️ {bs} 〜 {be}")
+                            with brc2:
+                                if st.button("削除", key=f"delbrk_{brid}_{i}"):
+                                    sb_delete("staff_breaks", {"id": brid})
+                                    st.cache_data.clear(); st.rerun()
+
+                    # 開始・終了ボタン
+                    bc1, bc2 = st.columns(2)
                     with bc1:
                         if st.button("▶ 開始", key=f"start_{eid}_{i}", use_container_width=True):
                             sb_update("staff_events", {"actual_start": datetime.now().isoformat()}, {"id": eid})
                             st.cache_data.clear(); st.rerun()
                     with bc2:
                         if st.button("■ 終了", key=f"end_{eid}_{i}", use_container_width=True):
-                            sb_update("staff_events", {"actual_end": datetime.now().isoformat(), "on_break": False}, {"id": eid})
+                            sb_update("staff_events", {"actual_end": datetime.now().isoformat()}, {"id": eid})
                             st.cache_data.clear(); st.rerun()
-                    with bc3:
-                        # 休憩ボタン（休憩中なら「休憩終了」、そうでなければ「休憩開始」）
-                        if on_break:
-                            if st.button("🍽️ 休憩終了", key=f"brkend_{eid}_{i}", use_container_width=True):
-                                sb_update("staff_events", {
-                                    "break_end": datetime.now().isoformat(),
-                                    "on_break": False
-                                }, {"id": eid})
-                                st.cache_data.clear(); st.rerun()
-                        else:
-                            if st.button("🍽️ 休憩開始", key=f"brkstart_{eid}_{i}", use_container_width=True):
-                                sb_update("staff_events", {
-                                    "break_start": datetime.now().isoformat(),
-                                    "break_end": None,
-                                    "on_break": True
-                                }, {"id": eid})
+
+                    # 休憩ボタン（自動記録）
+                    st.markdown("**休憩（ボタンで自動記録）**")
+                    if is_on_break:
+                        if st.button("🍽️ 休憩終了", key=f"brkend_{eid}_{i}", use_container_width=True):
+                            brid = int(ongoing_break.iloc[0]["id"])
+                            now_time = datetime.now().strftime("%H:%M")
+                            sb_update("staff_breaks", {
+                                "end_time": now_time, "is_ongoing": False
+                            }, {"id": brid})
+                            st.cache_data.clear(); st.rerun()
+                    else:
+                        if st.button("🍽️ 休憩開始", key=f"brkstart_{eid}_{i}", use_container_width=True):
+                            now_time = datetime.now().strftime("%H:%M")
+                            sb_insert("staff_breaks", {
+                                "event_id":   eid,
+                                "staff_id":   int(ev["staff_id"]),
+                                "break_date": str(ev["event_date"]),
+                                "start_time": now_time,
+                                "end_time":   None,
+                                "is_ongoing": True,
+                            })
+                            st.cache_data.clear(); st.rerun()
+
+                    # 休憩ボタン（手動入力）
+                    with st.form(key=f"manual_break_{eid}_{i}"):
+                        st.markdown("**休憩を手動で追加**")
+                        mbc1, mbc2, mbc3 = st.columns([2, 2, 1])
+                        with mbc1: mb_start = st.time_input("休憩開始", value=time_type(12,0), key=f"mbs_{eid}_{i}")
+                        with mbc2: mb_end   = st.time_input("休憩終了", value=time_type(13,0), key=f"mbe_{eid}_{i}")
+                        with mbc3:
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            if st.form_submit_button("追加"):
+                                sb_insert("staff_breaks", {
+                                    "event_id":   eid,
+                                    "staff_id":   int(ev["staff_id"]),
+                                    "break_date": str(ev["event_date"]),
+                                    "start_time": fmt_time(mb_start),
+                                    "end_time":   fmt_time(mb_end),
+                                    "is_ongoing": False,
+                                })
                                 st.cache_data.clear(); st.rerun()
 
                     # 状態変更・削除
