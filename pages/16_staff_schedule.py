@@ -158,32 +158,29 @@ with tab_dash:
 with tab_timeline:
     view_date = st.session_state["sched_date"]
 
-    # ── 横並び日付セレクター ──────────────────────────────────────────────────
-    top1, top2, top3 = st.columns([1.5, 5, 1])
-    with top1:
+    # ── 表示モード切り替え ────────────────────────────────────────────────────
+    view_mode = st.radio("表示モード", ["タイムライン（PC向け）", "リスト（スマホ向け）"],
+                          horizontal=True, key="view_mode")
+
+    # ── 日付ナビゲーション（前日/今日/翌日）────────────────────────────────────
+    nc1, nc2, nc3, nc4 = st.columns([1, 1, 1, 2])
+    with nc1:
+        if st.button("← 前日", use_container_width=True):
+            st.session_state["sched_date"] -= timedelta(days=1); st.rerun()
+    with nc2:
+        if st.button("今日", type="primary", use_container_width=True):
+            st.session_state["sched_date"] = date.today(); st.rerun()
+    with nc3:
+        if st.button("翌日 →", use_container_width=True):
+            st.session_state["sched_date"] += timedelta(days=1); st.rerun()
+    with nc4:
         picked = st.date_input("日付", value=view_date, key="date_picker", label_visibility="collapsed")
         if picked != view_date:
             st.session_state["sched_date"] = picked; st.rerun()
-    with top3:
-        if st.button("今日", type="primary", key="today_btn"):
-            st.session_state["sched_date"] = date.today(); st.rerun()
-
-    # 選択日を中心に前後±3日の日付ボタンを横並び表示（7個）
-    base = view_date
-    date_range = [base + timedelta(days=offset) for offset in range(-3, 4)]
-    cols = st.columns(len(date_range))
-    for idx, d in enumerate(date_range):
-        with cols[idx]:
-            is_selected = (d == view_date)
-            label = f"{d.month}/{d.day}\n{WEEKDAY_JP[d.weekday()]}"
-            if st.button(label, key=f"dsel_{d}",
-                         type="primary" if is_selected else "secondary",
-                         use_container_width=True):
-                st.session_state["sched_date"] = d; st.rerun()
 
     view_date = st.session_state["sched_date"]
     wd_jp = WEEKDAY_JP[view_date.weekday()]
-    st.markdown(f'<div class="section-head">{view_date}（{wd_jp}）のタイムライン</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-head">{view_date}（{wd_jp}）のスケジュール</div>', unsafe_allow_html=True)
 
     if staff_df.empty:
         st.markdown('<div class="info-box">従業員が登録されていません</div>', unsafe_allow_html=True)
@@ -192,53 +189,90 @@ with tab_timeline:
         if not events_df.empty:
             day_events = events_df[events_df["event_date"].astype(str) == str(view_date)].copy()
 
-        # 時間軸ヘッダー
-        header_html = '<div style="display:flex;border-bottom:2px solid #1e3a5f;padding-bottom:4px;margin-bottom:4px;">'
-        header_html += '<div style="width:80px;flex-shrink:0;font-weight:700;font-size:.8rem;">従業員</div>'
-        for h in HOURS:
-            header_html += f'<div style="flex:1;text-align:center;font-size:.7rem;color:#6b7280;">{h}:00</div>'
-        header_html += '</div>'
-        st.markdown(header_html, unsafe_allow_html=True)
+        is_mobile = (view_mode == "リスト（スマホ向け）")
 
-        for _, s in staff_df.iterrows():
-            if not s.get("is_active", True): continue
-            sid   = int(s["id"])
-            sname = s["name"]
-            is_work, w_start, w_end = get_workday(sid, view_date, workdays_df)
+        if not is_mobile:
+            # ── タイムライン表示（PC向け）────────────────────────────────────
+            header_html = '<div style="display:flex;border-bottom:2px solid #1e3a5f;padding-bottom:4px;margin-bottom:4px;">'
+            header_html += '<div style="width:80px;flex-shrink:0;font-weight:700;font-size:.8rem;">従業員</div>'
+            for h in HOURS:
+                header_html += f'<div style="flex:1;text-align:center;font-size:.7rem;color:#6b7280;">{h}:00</div>'
+            header_html += '</div>'
+            st.markdown(header_html, unsafe_allow_html=True)
 
-            s_events = day_events[day_events["staff_id"] == sid] if not day_events.empty else pd.DataFrame()
-            s_events = s_events[s_events["status"] != "cancelled"] if not s_events.empty else s_events
+            for _, s in staff_df.iterrows():
+                if not s.get("is_active", True): continue
+                sid   = int(s["id"])
+                sname = s["name"]
+                is_work, w_start, w_end = get_workday(sid, view_date, workdays_df)
+                s_events = day_events[day_events["staff_id"] == sid] if not day_events.empty else pd.DataFrame()
+                s_events = s_events[s_events["status"] != "cancelled"] if not s_events.empty else s_events
 
-            row_html = '<div style="display:flex;align-items:center;border-bottom:1px solid #e5e7eb;min-height:44px;">'
-            row_html += f'<div style="width:80px;flex-shrink:0;font-weight:600;font-size:.85rem;">{sname}</div>'
-            row_html += '<div style="flex:1;display:flex;height:36px;">'
+                row_html = '<div style="display:flex;align-items:center;border-bottom:1px solid #e5e7eb;min-height:44px;">'
+                row_html += f'<div style="width:80px;flex-shrink:0;font-weight:600;font-size:.85rem;">{sname}</div>'
+                row_html += '<div style="flex:1;display:flex;height:36px;">'
 
-            if not is_work and (s_events.empty):
-                row_html += '<div style="flex:1;background:#f3f4f6;color:#9ca3af;text-align:center;line-height:36px;font-size:.8rem;border-radius:4px;">休日</div>'
-            else:
-                w_start_f = time_to_float(w_start) if w_start else HOURS[0]
-                w_end_f   = time_to_float(w_end) if w_end else HOURS[-1]+1
-                for h in HOURS:
-                    slot_events = []
+                if not is_work and (s_events.empty):
+                    row_html += '<div style="flex:1;background:#f3f4f6;color:#9ca3af;text-align:center;line-height:36px;font-size:.8rem;border-radius:4px;">休日</div>'
+                else:
+                    w_start_f = time_to_float(w_start) if w_start else HOURS[0]
+                    w_end_f   = time_to_float(w_end) if w_end else HOURS[-1]+1
+                    for h in HOURS:
+                        slot_events = []
+                        if not s_events.empty:
+                            for _, ev in s_events.iterrows():
+                                ps = time_to_float(ev["planned_start"]); pe = time_to_float(ev["planned_end"])
+                                if ps is not None and pe is not None and ps <= h < pe:
+                                    slot_events.append(ev)
+                        if slot_events:
+                            ev = slot_events[0]
+                            # 休憩中なら休憩表示
+                            if bool(ev.get("on_break", False)):
+                                row_html += '<div style="flex:1;background:#f59e0b;color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="休憩中">🍽️休憩</div>'
+                            else:
+                                color = get_task_color(ev["task_type"], tasks_df)
+                                row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="{ev["task_type"]}">{ev["task_type"][:4]}</div>'
+                        elif is_work and w_start_f <= h < w_end_f:
+                            row_html += '<div style="flex:1;background:#ecfdf5;border:1px dashed #a7f3d0;" title="空き"></div>'
+                        else:
+                            row_html += '<div style="flex:1;background:#fafafa;"></div>'
+                row_html += '</div></div>'
+                st.markdown(row_html, unsafe_allow_html=True)
+
+            st.markdown('<div style="margin-top:12px;font-size:.75rem;color:#6b7280;">凡例: '
+                        '<span style="background:#ecfdf5;border:1px dashed #a7f3d0;padding:2px 8px;">空き</span> '
+                        '<span style="background:#f3f4f6;padding:2px 8px;">休日</span> '
+                        '<span style="background:#f59e0b;color:white;padding:2px 8px;">🍽️休憩</span> '
+                        '各色=業務種類</div>', unsafe_allow_html=True)
+        else:
+            # ── リスト表示（スマホ向け）──────────────────────────────────────
+            for _, s in staff_df.iterrows():
+                if not s.get("is_active", True): continue
+                sid   = int(s["id"])
+                sname = s["name"]
+                is_work, w_start, w_end = get_workday(sid, view_date, workdays_df)
+                s_events = day_events[day_events["staff_id"] == sid] if not day_events.empty else pd.DataFrame()
+                s_events = s_events[s_events["status"] != "cancelled"].sort_values("planned_start") if not s_events.empty else s_events
+
+                # スタッフ名ヘッダー
+                if not is_work and s_events.empty:
+                    st.markdown(f'<div style="padding:8px 12px;background:#f3f4f6;border-radius:8px;margin:6px 0;"><strong>{sname}</strong> <span style="color:#9ca3af;">休日</span></div>', unsafe_allow_html=True)
+                else:
+                    work_info = f'{fmt_time(w_start)}〜{fmt_time(w_end)} 勤務' if is_work else '休日出勤あり'
+                    st.markdown(f'<div style="padding:8px 12px;background:#eff6ff;border-radius:8px;margin:6px 0 2px;"><strong>{sname}</strong> <span style="color:#1e3a5f;font-size:.8rem;">{work_info}</span></div>', unsafe_allow_html=True)
                     if not s_events.empty:
                         for _, ev in s_events.iterrows():
-                            ps = time_to_float(ev["planned_start"]); pe = time_to_float(ev["planned_end"])
-                            if ps is not None and pe is not None and ps <= h < pe:
-                                slot_events.append(ev)
-                    if slot_events:
-                        ev = slot_events[0]
-                        color = get_task_color(ev["task_type"], tasks_df)
-                        row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="{ev["task_type"]}">{ev["task_type"][:4]}</div>'
-                    elif is_work and w_start_f <= h < w_end_f:
-                        row_html += '<div style="flex:1;background:#ecfdf5;border:1px dashed #a7f3d0;" title="空き"></div>'
+                            color = get_task_color(ev["task_type"], tasks_df)
+                            loc = f' 📍{ev["location"]}' if ev.get("location") else ''
+                            break_tag = ' <span style="color:#f59e0b;font-weight:700;">🍽️休憩中</span>' if bool(ev.get("on_break", False)) else ''
+                            st.markdown(
+                                f'<div style="display:flex;align-items:center;padding:6px 12px;margin:2px 0 2px 16px;border-left:4px solid {color};background:#fafafa;">'
+                                f'<span style="font-weight:600;color:{color};min-width:90px;">{fmt_time(ev["planned_start"])}〜{fmt_time(ev["planned_end"])}</span>'
+                                f'<span style="margin-left:8px;">{ev["task_type"]}{loc}{break_tag}</span></div>',
+                                unsafe_allow_html=True
+                            )
                     else:
-                        row_html += '<div style="flex:1;background:#fafafa;"></div>'
-            row_html += '</div></div>'
-            st.markdown(row_html, unsafe_allow_html=True)
-
-        st.markdown('<div style="margin-top:12px;font-size:.75rem;color:#6b7280;">凡例: '
-                    '<span style="background:#ecfdf5;border:1px dashed #a7f3d0;padding:2px 8px;">空き</span> '
-                    '<span style="background:#f3f4f6;padding:2px 8px;">休日</span> 各色=業務種類</div>', unsafe_allow_html=True)
+                        st.markdown('<div style="padding:4px 12px 4px 16px;color:#9ca3af;font-size:.8rem;">予定なし（終日空き）</div>', unsafe_allow_html=True)
 
         # 予定詳細・実績記録
         st.markdown('<div class="section-head">予定詳細・実績記録</div>', unsafe_allow_html=True)
@@ -253,8 +287,12 @@ with tab_timeline:
                 status_label, status_color = STATUS_MAP.get(ev.get("status","confirmed"), ("", "#000"))
                 actual_s = fmt_time(ev.get("actual_start")) if ev.get("actual_start") else "—"
                 actual_e = fmt_time(ev.get("actual_end")) if ev.get("actual_end") else "—"
+                on_break = bool(ev.get("on_break", False))
+                break_s  = fmt_time(ev.get("break_start")) if ev.get("break_start") else "—"
+                break_e  = fmt_time(ev.get("break_end")) if ev.get("break_end") else "—"
+                break_badge = " 🍽️休憩中" if on_break else ""
 
-                with st.expander(f'{staff_name} | {ev["task_type"]} | {fmt_time(ev["planned_start"])}〜{fmt_time(ev["planned_end"])} | {status_label}'):
+                with st.expander(f'{staff_name} | {ev["task_type"]} | {fmt_time(ev["planned_start"])}〜{fmt_time(ev["planned_end"])} | {status_label}{break_badge}'):
                     dc1, dc2 = st.columns(2)
                     with dc1:
                         st.markdown(f"**担当:** {staff_name}")
@@ -265,27 +303,106 @@ with tab_timeline:
                     with dc2:
                         st.markdown(f"**実績開始:** {actual_s}")
                         st.markdown(f"**実績終了:** {actual_e}")
+                        st.markdown(f"**休憩:** {break_s} 〜 {break_e}")
                         st.markdown(f"**ステータス:** <span style='color:{status_color};'>{status_label}</span>", unsafe_allow_html=True)
+                        if on_break:
+                            st.markdown('<span style="color:#d97706;font-weight:700;">🍽️ 現在休憩中</span>', unsafe_allow_html=True)
 
-                    bc1, bc2, bc3, bc4 = st.columns(4)
+                    # 開始・終了・休憩ボタン
+                    bc1, bc2, bc3 = st.columns(3)
                     with bc1:
-                        if st.button("▶ 開始", key=f"start_{eid}_{i}"):
+                        if st.button("▶ 開始", key=f"start_{eid}_{i}", use_container_width=True):
                             sb_update("staff_events", {"actual_start": datetime.now().isoformat()}, {"id": eid})
                             st.cache_data.clear(); st.rerun()
                     with bc2:
-                        if st.button("■ 終了", key=f"end_{eid}_{i}"):
-                            sb_update("staff_events", {"actual_end": datetime.now().isoformat()}, {"id": eid})
+                        if st.button("■ 終了", key=f"end_{eid}_{i}", use_container_width=True):
+                            sb_update("staff_events", {"actual_end": datetime.now().isoformat(), "on_break": False}, {"id": eid})
                             st.cache_data.clear(); st.rerun()
                     with bc3:
+                        # 休憩ボタン（休憩中なら「休憩終了」、そうでなければ「休憩開始」）
+                        if on_break:
+                            if st.button("🍽️ 休憩終了", key=f"brkend_{eid}_{i}", use_container_width=True):
+                                sb_update("staff_events", {
+                                    "break_end": datetime.now().isoformat(),
+                                    "on_break": False
+                                }, {"id": eid})
+                                st.cache_data.clear(); st.rerun()
+                        else:
+                            if st.button("🍽️ 休憩開始", key=f"brkstart_{eid}_{i}", use_container_width=True):
+                                sb_update("staff_events", {
+                                    "break_start": datetime.now().isoformat(),
+                                    "break_end": None,
+                                    "on_break": True
+                                }, {"id": eid})
+                                st.cache_data.clear(); st.rerun()
+
+                    # 状態変更・削除
+                    sc1, sc2 = st.columns(2)
+                    with sc1:
                         new_status = st.selectbox("状態", list(STATUS_MAP.keys()),
                             index=list(STATUS_MAP.keys()).index(ev.get("status","confirmed")),
                             format_func=lambda x: STATUS_MAP[x][0], key=f"st_{eid}_{i}")
-                        if st.button("状態更新", key=f"stupd_{eid}_{i}"):
+                        if st.button("状態更新", key=f"stupd_{eid}_{i}", use_container_width=True):
                             sb_update("staff_events", {"status": new_status}, {"id": eid})
                             st.cache_data.clear(); st.rerun()
-                    with bc4:
-                        if st.button("🗑️ 削除", key=f"del_ev_{eid}_{i}"):
+                    with sc2:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("🗑️ 削除", key=f"del_ev_{eid}_{i}", use_container_width=True):
                             sb_delete("staff_events", {"id": eid})
+                            st.cache_data.clear(); st.rerun()
+
+                    # ── 予定内容を編集 ──────────────────────────────────────
+                    st.markdown("---")
+                    st.markdown("**予定内容を編集**")
+                    with st.form(key=f"edit_ev_{eid}_{i}"):
+                        task_names_e = tasks_df["name"].tolist() if not tasks_df.empty else []
+                        staff_opts_e = {s["name"]: int(s["id"]) for _, s in staff_df.iterrows()}
+
+                        efc1, efc2 = st.columns(2)
+                        with efc1:
+                            # 担当者
+                            cur_staff_name = staff_name
+                            staff_idx = list(staff_opts_e.keys()).index(cur_staff_name) if cur_staff_name in staff_opts_e else 0
+                            e_staff = st.selectbox("担当者", list(staff_opts_e.keys()), index=staff_idx, key=f"ev_staff_{eid}_{i}")
+                            # 業務種類
+                            task_idx = task_names_e.index(ev["task_type"]) if ev["task_type"] in task_names_e else 0
+                            e_task = st.selectbox("業務種類", task_names_e, index=task_idx, key=f"ev_task_{eid}_{i}")
+                            # 日付
+                            try:
+                                cur_date = pd.to_datetime(ev["event_date"]).date()
+                            except Exception:
+                                cur_date = date.today()
+                            e_date = st.date_input("日付", value=cur_date, key=f"ev_date_{eid}_{i}")
+                        with efc2:
+                            # 開始時刻
+                            try:
+                                ps_parts = fmt_time(ev["planned_start"]).split(":")
+                                cur_start = time_type(int(ps_parts[0]), int(ps_parts[1]))
+                            except Exception:
+                                cur_start = time_type(10, 0)
+                            e_start = st.time_input("開始時刻", value=cur_start, key=f"ev_start_{eid}_{i}")
+                            # 終了時刻
+                            try:
+                                pe_parts = fmt_time(ev["planned_end"]).split(":")
+                                cur_end = time_type(int(pe_parts[0]), int(pe_parts[1]))
+                            except Exception:
+                                cur_end = time_type(12, 0)
+                            e_end = st.time_input("終了時刻", value=cur_end, key=f"ev_end_{eid}_{i}")
+
+                        e_location = st.text_input("📍 場所", value=ev.get("location","") or "", key=f"ev_loc_{eid}_{i}")
+                        e_memo     = st.text_input("メモ", value=ev.get("memo","") or "", key=f"ev_memo_{eid}_{i}")
+
+                        if st.form_submit_button("✏️ 予定を更新する", use_container_width=True):
+                            sb_update("staff_events", {
+                                "staff_id":      staff_opts_e[e_staff],
+                                "task_type":     e_task,
+                                "event_date":    str(e_date),
+                                "planned_start": fmt_time(e_start),
+                                "planned_end":   fmt_time(e_end),
+                                "location":      e_location.strip() or None,
+                                "memo":          e_memo.strip() or None,
+                            }, {"id": eid})
+                            st.markdown('<div class="success-box">予定を更新しました</div>', unsafe_allow_html=True)
                             st.cache_data.clear(); st.rerun()
         else:
             st.markdown('<div class="info-box">この日の予定はありません</div>', unsafe_allow_html=True)
