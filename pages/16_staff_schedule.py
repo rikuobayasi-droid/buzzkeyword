@@ -112,12 +112,14 @@ tasks_df, staff_df, events_df, workdays_df, breaks_df = load_all()
 
 st.markdown('<div class="page-title">スタッフ・スケジュール管理</div>', unsafe_allow_html=True)
 
-tab_dash, tab_timeline, tab_staff, tab_events, tab_settings = st.tabs([
-    "ダッシュボード", "日別タイムライン", "従業員管理", "予定管理", "設定"
+tab_dash, tab_timeline, tab_calendar, tab_staff, tab_events, tab_settings = st.tabs([
+    "ダッシュボード", "日別タイムライン", "月別カレンダー", "従業員管理", "予定管理", "設定"
 ])
 
 if "sched_date" not in st.session_state:
     st.session_state["sched_date"] = date.today()
+if "cal_month" not in st.session_state:
+    st.session_state["cal_month"] = date.today().replace(day=1)
 
 # ════════════════════════════════════════════════════════
 # タブ1: ダッシュボード
@@ -309,6 +311,45 @@ with tab_timeline:
                     else:
                         st.markdown('<div style="padding:4px 12px 4px 16px;color:#9ca3af;font-size:.8rem;">予定なし（終日空き）</div>', unsafe_allow_html=True)
 
+        # ── この日にクイック予定追加 ──────────────────────────────────────────
+        with st.expander(f"＋ {view_date} に予定を追加"):
+            q_staff_options = {s["name"]: int(s["id"]) for _, s in staff_df.iterrows() if s.get("is_active", True)}
+            q_task_names = tasks_df["name"].tolist() if not tasks_df.empty else []
+            with st.form(key=f"quick_add_{view_date}"):
+                qc1, qc2, qc3 = st.columns(3)
+                with qc1:
+                    q_staff = st.selectbox("担当者", list(q_staff_options.keys()), key="q_staff")
+                    q_task  = st.selectbox("業務", q_task_names, key="q_task")
+                with qc2:
+                    q_start = st.time_input("開始", value=time_type(10,0), key="q_start")
+                    q_dur   = st.number_input("所要時間", min_value=0.5, value=2.0, step=0.5, key="q_dur")
+                with qc3:
+                    q_loc  = st.text_input("📍場所", key="q_loc")
+                    q_calc_end = calc_end_time(q_start, q_dur)
+                    st.caption(f"終了: {q_calc_end}")
+                if st.form_submit_button("追加する"):
+                    qsid = q_staff_options[q_staff]
+                    qstaff_row = staff_df[staff_df["id"] == qsid].iloc[0]
+                    qskills = parse_json_field(qstaff_row.get("skills"), [])
+                    q_is_work, q_ws, q_we = get_workday(qsid, view_date, workdays_df)
+                    q_status = "confirmed"; q_reasons = []; q_holiday = False
+                    if not q_is_work:
+                        q_status = "need_action"; q_reasons.append("出勤日ではありません"); q_holiday = True
+                    if qskills and q_task not in qskills:
+                        q_status = "need_action"; q_reasons.append(f"「{q_task}」を担当できません")
+                    sb_insert("staff_events", {
+                        "staff_id":        qsid,
+                        "task_type":       q_task,
+                        "event_date":      str(view_date),
+                        "planned_start":   fmt_time(q_start),
+                        "planned_end":     q_calc_end,
+                        "location":        q_loc.strip() or None,
+                        "status":          q_status,
+                        "is_holiday_work": q_holiday,
+                        "adjust_reason":   " / ".join(q_reasons) if q_reasons else None,
+                    })
+                    st.cache_data.clear(); st.rerun()
+
         # 予定詳細・実績記録
         st.markdown('<div class="section-head">予定詳細・実績記録</div>', unsafe_allow_html=True)
         if not day_events.empty:
@@ -484,6 +525,118 @@ with tab_timeline:
             st.markdown('<div class="info-box">この日の予定はありません</div>', unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════
+# タブ: 月別カレンダー（全員の出勤・休み一覧）
+# ════════════════════════════════════════════════════════
+with tab_calendar:
+    import calendar as cal_module
+
+    cal_month = st.session_state["cal_month"]
+
+    # 月ナビゲーション
+    mc1, mc2, mc3, mc4 = st.columns([1, 1, 1, 2])
+    with mc1:
+        if st.button("← 前月", use_container_width=True):
+            y, m = cal_month.year, cal_month.month
+            st.session_state["cal_month"] = date(y-1, 12, 1) if m == 1 else date(y, m-1, 1)
+            st.rerun()
+    with mc2:
+        if st.button("今月", type="primary", use_container_width=True):
+            st.session_state["cal_month"] = date.today().replace(day=1); st.rerun()
+    with mc3:
+        if st.button("翌月 →", use_container_width=True):
+            y, m = cal_month.year, cal_month.month
+            st.session_state["cal_month"] = date(y+1, 1, 1) if m == 12 else date(y, m+1, 1)
+            st.rerun()
+
+    cal_month = st.session_state["cal_month"]
+    st.markdown(f'<div class="section-head">{cal_month.year}年{cal_month.month}月 出勤カレンダー</div>', unsafe_allow_html=True)
+
+    if staff_df.empty:
+        st.markdown('<div class="info-box">従業員が登録されていません</div>', unsafe_allow_html=True)
+    else:
+        # その月の日数
+        num_days = cal_module.monthrange(cal_month.year, cal_month.month)[1]
+        days = [date(cal_month.year, cal_month.month, d) for d in range(1, num_days+1)]
+
+        active_staff_cal = staff_df[staff_df["is_active"] == True] if "is_active" in staff_df.columns else staff_df
+
+        # 出勤日をセットに
+        workday_set = set()
+        if not workdays_df.empty:
+            for _, wd in workdays_df.iterrows():
+                workday_set.add((int(wd["staff_id"]), str(wd["work_date"])[:10]))
+
+        # 予定がある日をセットに
+        event_set = {}
+        if not events_df.empty:
+            for _, ev in events_df.iterrows():
+                if ev.get("status") == "cancelled": continue
+                key = (int(ev["staff_id"]), str(ev["event_date"])[:10])
+                event_set[key] = event_set.get(key, 0) + 1
+
+        # カレンダーテーブルを構築（横=日付、縦=スタッフ）
+        html = '<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:.72rem;white-space:nowrap;">'
+        # ヘッダー行（日付）
+        html += '<tr><th style="position:sticky;left:0;background:#1e3a5f;color:white;padding:6px 10px;border:1px solid #ddd;z-index:1;">従業員</th>'
+        for d in days:
+            wd_label = WEEKDAY_JP[d.weekday()]
+            # 土日に色
+            bg = "#1e3a5f"
+            if d.weekday() == 5: bg = "#2563eb"   # 土
+            elif d.weekday() == 6: bg = "#dc2626" # 日
+            is_today = (d == date.today())
+            border = "3px solid #f59e0b" if is_today else "1px solid #ddd"
+            html += f'<th style="background:{bg};color:white;padding:4px 6px;border:{border};min-width:32px;">{d.day}<br><span style="font-size:.65rem;">{wd_label}</span></th>'
+        html += '<th style="background:#1e3a5f;color:white;padding:6px 10px;border:1px solid #ddd;">出勤日数</th></tr>'
+
+        # 各スタッフの行
+        for _, s in active_staff_cal.iterrows():
+            sid = int(s["id"])
+            sname = s["name"]
+            work_count = 0
+            html += f'<tr><td style="position:sticky;left:0;background:#f9fafb;font-weight:600;padding:6px 10px;border:1px solid #ddd;z-index:1;">{sname}</td>'
+            for d in days:
+                dstr = str(d)
+                is_work = (sid, dstr) in workday_set
+                ev_count = event_set.get((sid, dstr), 0)
+                if is_work:
+                    work_count += 1
+                    # 出勤（予定があれば数を表示）
+                    if ev_count > 0:
+                        html += f'<td style="background:#dbeafe;text-align:center;padding:4px;border:1px solid #ddd;color:#1e3a5f;font-weight:700;" title="{ev_count}件の予定">●<br><span style="font-size:.6rem;">{ev_count}</span></td>'
+                    else:
+                        html += '<td style="background:#ecfdf5;text-align:center;padding:4px;border:1px solid #ddd;color:#15803d;">●</td>'
+                else:
+                    # 休み（予定があれば休日出勤扱いで表示）
+                    if ev_count > 0:
+                        html += f'<td style="background:#fef3c7;text-align:center;padding:4px;border:1px solid #ddd;color:#d97706;font-weight:700;" title="休日出勤 {ev_count}件">▲</td>'
+                    else:
+                        html += '<td style="background:#f9fafb;text-align:center;padding:4px;border:1px solid #ddd;color:#d1d5db;">-</td>'
+            html += f'<td style="text-align:center;padding:4px;border:1px solid #ddd;font-weight:700;">{work_count}日</td></tr>'
+        html += '</table></div>'
+        st.markdown(html, unsafe_allow_html=True)
+
+        # 凡例
+        st.markdown('<div style="margin-top:12px;font-size:.75rem;color:#6b7280;">凡例: '
+                    '<span style="background:#ecfdf5;color:#15803d;padding:2px 8px;">● 出勤</span> '
+                    '<span style="background:#dbeafe;color:#1e3a5f;padding:2px 8px;">● 出勤+予定あり(数字)</span> '
+                    '<span style="background:#fef3c7;color:#d97706;padding:2px 8px;">▲ 休日出勤</span> '
+                    '<span style="background:#f9fafb;color:#9ca3af;padding:2px 8px;">- 休み</span></div>',
+                    unsafe_allow_html=True)
+
+        # その月の集計
+        st.markdown('<div class="section-head">月間サマリー</div>', unsafe_allow_html=True)
+        total_workdays = len(workday_set & {(sid, str(d)) for sid in active_staff_cal["id"].astype(int) for d in days}) if not active_staff_cal.empty else 0
+        summary_rows = []
+        for _, s in active_staff_cal.iterrows():
+            sid = int(s["id"])
+            wc = sum(1 for d in days if (sid, str(d)) in workday_set)
+            ec = sum(event_set.get((sid, str(d)), 0) for d in days)
+            summary_rows.append({"従業員": s["name"], "出勤日数": wc, "予定件数": ec})
+        if summary_rows:
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+# ════════════════════════════════════════════════════════
 # タブ3: 従業員管理（勤務時間廃止・出勤日登録方式）
 # ════════════════════════════════════════════════════════
 with tab_staff:
@@ -608,7 +761,6 @@ with tab_staff:
 # タブ4: 予定管理
 # ════════════════════════════════════════════════════════
 with tab_events:
-    st.markdown('<div class="section-head">予定を追加</div>', unsafe_allow_html=True)
     if staff_df.empty:
         st.markdown('<div class="info-box">先に従業員を登録してください</div>', unsafe_allow_html=True)
     else:
@@ -616,92 +768,171 @@ with tab_events:
         staff_options = {s["name"]: int(s["id"]) for _, s in active_staff.iterrows()}
         task_names = tasks_df["name"].tolist() if not tasks_df.empty else []
 
-        with st.form(key="add_event_form"):
-            ec1, ec2 = st.columns(2)
-            with ec1:
-                ev_staff = st.selectbox("担当者 *", list(staff_options.keys()))
-                ev_task  = st.selectbox("業務種類 *", task_names)
-                ev_date  = st.date_input("日付", value=st.session_state["sched_date"])
-            with ec2:
-                ev_start = st.time_input("開始時間", value=time_type(10,0))
-                ev_dur   = st.number_input("所要時間（時間）", min_value=0.5, value=2.0, step=0.5)
-                calc_end = calc_end_time(ev_start, ev_dur)
-                st.markdown(f'<div class="info-box">終了時間（自動計算）: <strong>{calc_end}</strong></div>', unsafe_allow_html=True)
-            ec3, ec4 = st.columns(2)
-            with ec3: ev_location = st.text_input("📍 場所（任意）", placeholder="例: 渋谷")
-            with ec4: ev_memo = st.text_input("メモ（任意）")
+        # 予定モード選択
+        event_mode = st.radio("予定タイプ", ["単独予定", "複数人予定（研修・新人教育など）"], horizontal=True)
 
-            if st.form_submit_button("予定を追加する"):
-                sid = staff_options[ev_staff]
-                staff_row = active_staff[active_staff["id"] == sid].iloc[0]
-                skills = parse_json_field(staff_row.get("skills"), [])
+        if event_mode == "単独予定":
+            st.markdown('<div class="section-head">予定を追加</div>', unsafe_allow_html=True)
+            with st.form(key="add_event_form"):
+                ec1, ec2 = st.columns(2)
+                with ec1:
+                    ev_staff = st.selectbox("担当者 *", list(staff_options.keys()))
+                    ev_task  = st.selectbox("業務種類 *", task_names)
+                    ev_date  = st.date_input("日付", value=st.session_state["sched_date"])
+                with ec2:
+                    ev_start = st.time_input("開始時間", value=time_type(10,0))
+                    ev_dur   = st.number_input("所要時間（時間）", min_value=0.5, value=2.0, step=0.5)
+                    calc_end = calc_end_time(ev_start, ev_dur)
+                    st.markdown(f'<div class="info-box">終了時間（自動計算）: <strong>{calc_end}</strong></div>', unsafe_allow_html=True)
+                ec3, ec4 = st.columns(2)
+                with ec3: ev_location = st.text_input("📍 場所（任意）", placeholder="例: 渋谷")
+                with ec4: ev_memo = st.text_input("メモ（任意）")
 
-                # 出勤日チェック（staff_work_days ベース）
-                is_work, w_start, w_end = get_workday(sid, ev_date, workdays_df)
+                if st.form_submit_button("予定を追加する"):
+                    sid = staff_options[ev_staff]
+                    staff_row = active_staff[active_staff["id"] == sid].iloc[0]
+                    skills = parse_json_field(staff_row.get("skills"), [])
 
-                status = "confirmed"; reasons = []; is_holiday_work = False
-                if not is_work:
-                    status = "need_action"
-                    reasons.append(f"{ev_staff}さんは{ev_date}が出勤日として登録されていません")
-                    is_holiday_work = True
-                else:
-                    start_f = time_to_float(ev_start); end_f = time_to_float(calc_end)
-                    ws_f = time_to_float(w_start); we_f = time_to_float(w_end)
-                    if ws_f is not None and we_f is not None:
-                        if start_f < ws_f or end_f > we_f:
-                            status = "adjusting"
-                            reasons.append(f"勤務時間（{fmt_time(w_start)}〜{fmt_time(w_end)}）外です")
+                    # 出勤日チェック（staff_work_days ベース）
+                    is_work, w_start, w_end = get_workday(sid, ev_date, workdays_df)
 
-                if skills and ev_task not in skills:
-                    status = "need_action"
-                    reasons.append(f"{ev_staff}さんは「{ev_task}」を担当できません")
-
-                res = sb_insert("staff_events", {
-                    "staff_id":        sid,
-                    "task_type":       ev_task,
-                    "event_date":      str(ev_date),
-                    "planned_start":   fmt_time(ev_start),
-                    "planned_end":     calc_end,
-                    "location":        ev_location.strip() or None,
-                    "memo":            ev_memo.strip() or None,
-                    "status":          status,
-                    "is_holiday_work": is_holiday_work,
-                    "adjust_reason":   " / ".join(reasons) if reasons else None,
-                })
-                if res:
-                    if status == "confirmed":
-                        st.markdown('<div class="success-box">✅ 予定を追加しました（確定）</div>', unsafe_allow_html=True)
+                    status = "confirmed"; reasons = []; is_holiday_work = False
+                    if not is_work:
+                        status = "need_action"
+                        reasons.append(f"{ev_staff}さんは{ev_date}が出勤日として登録されていません")
+                        is_holiday_work = True
                     else:
-                        st.markdown(f'<div class="err-box">⚠️ 予定を追加しましたが調整が必要です<br>理由: {" / ".join(reasons)}</div>', unsafe_allow_html=True)
-                        # 代替スタッフ候補
-                        st.markdown('<div class="section-head">代替スタッフ候補</div>', unsafe_allow_html=True)
-                        candidates = []
-                        for _, cs in active_staff.iterrows():
-                            if int(cs["id"]) == sid: continue
-                            c_work, c_ws, c_we = get_workday(int(cs["id"]), ev_date, workdays_df)
-                            c_skills = parse_json_field(cs.get("skills"), [])
-                            if not c_work: continue
-                            if c_skills and ev_task not in c_skills: continue
-                            c_events = events_df[
-                                (events_df["staff_id"] == cs["id"]) &
-                                (events_df["event_date"].astype(str) == str(ev_date))
-                            ] if not events_df.empty else pd.DataFrame()
-                            busy = False
-                            start_f = time_to_float(ev_start); end_f = time_to_float(calc_end)
-                            if not c_events.empty:
-                                for _, ce in c_events.iterrows():
-                                    cps = time_to_float(ce["planned_start"]); cpe = time_to_float(ce["planned_end"])
-                                    if cps is not None and cpe is not None:
-                                        if not (end_f <= cps or start_f >= cpe):
-                                            busy = True; break
-                            if not busy:
-                                candidates.append(f"{cs['name']}（{fmt_time(c_ws)}〜{fmt_time(c_we)} 勤務・{ev_task}対応可）")
-                        if candidates:
-                            for c in candidates:
-                                st.markdown(f'<div class="success-box">✅ {c}</div>', unsafe_allow_html=True)
+                        start_f = time_to_float(ev_start); end_f = time_to_float(calc_end)
+                        ws_f = time_to_float(w_start); we_f = time_to_float(w_end)
+                        if ws_f is not None and we_f is not None:
+                            if start_f < ws_f or end_f > we_f:
+                                status = "adjusting"
+                                reasons.append(f"勤務時間（{fmt_time(w_start)}〜{fmt_time(w_end)}）外です")
+
+                    if skills and ev_task not in skills:
+                        status = "need_action"
+                        reasons.append(f"{ev_staff}さんは「{ev_task}」を担当できません")
+
+                    res = sb_insert("staff_events", {
+                        "staff_id":        sid,
+                        "task_type":       ev_task,
+                        "event_date":      str(ev_date),
+                        "planned_start":   fmt_time(ev_start),
+                        "planned_end":     calc_end,
+                        "location":        ev_location.strip() or None,
+                        "memo":            ev_memo.strip() or None,
+                        "status":          status,
+                        "is_holiday_work": is_holiday_work,
+                        "adjust_reason":   " / ".join(reasons) if reasons else None,
+                    })
+                    if res:
+                        if status == "confirmed":
+                            st.markdown('<div class="success-box">✅ 予定を追加しました（確定）</div>', unsafe_allow_html=True)
                         else:
-                            st.markdown('<div class="info-box">対応可能な代替スタッフが見つかりませんでした</div>', unsafe_allow_html=True)
-                    st.cache_data.clear()
+                            st.markdown(f'<div class="err-box">⚠️ 予定を追加しましたが調整が必要です<br>理由: {" / ".join(reasons)}</div>', unsafe_allow_html=True)
+                            # 代替スタッフ候補
+                            st.markdown('<div class="section-head">代替スタッフ候補</div>', unsafe_allow_html=True)
+                            candidates = []
+                            for _, cs in active_staff.iterrows():
+                                if int(cs["id"]) == sid: continue
+                                c_work, c_ws, c_we = get_workday(int(cs["id"]), ev_date, workdays_df)
+                                c_skills = parse_json_field(cs.get("skills"), [])
+                                if not c_work: continue
+                                if c_skills and ev_task not in c_skills: continue
+                                c_events = events_df[
+                                    (events_df["staff_id"] == cs["id"]) &
+                                    (events_df["event_date"].astype(str) == str(ev_date))
+                                ] if not events_df.empty else pd.DataFrame()
+                                busy = False
+                                start_f = time_to_float(ev_start); end_f = time_to_float(calc_end)
+                                if not c_events.empty:
+                                    for _, ce in c_events.iterrows():
+                                        cps = time_to_float(ce["planned_start"]); cpe = time_to_float(ce["planned_end"])
+                                        if cps is not None and cpe is not None:
+                                            if not (end_f <= cps or start_f >= cpe):
+                                                busy = True; break
+                                if not busy:
+                                    candidates.append(f"{cs['name']}（{fmt_time(c_ws)}〜{fmt_time(c_we)} 勤務・{ev_task}対応可）")
+                            if candidates:
+                                for c in candidates:
+                                    st.markdown(f'<div class="success-box">✅ {c}</div>', unsafe_allow_html=True)
+                            else:
+                                st.markdown('<div class="info-box">対応可能な代替スタッフが見つかりませんでした</div>', unsafe_allow_html=True)
+                        st.cache_data.clear()
+
+        else:
+            # ── 複数人予定（研修・新人教育）──────────────────────────────────
+            st.markdown('<div class="section-head">複数人予定を追加（研修・新人教育など）</div>', unsafe_allow_html=True)
+            st.caption("先生役と生徒役をまとめて選び、全員のタイムラインに同じ予定を一括登録します。")
+            with st.form(key="add_multi_event_form"):
+                mec1, mec2 = st.columns(2)
+                with mec1:
+                    m_task = st.selectbox("業務種類 *", task_names, key="m_task")
+                    m_date = st.date_input("日付", value=st.session_state["sched_date"], key="m_date")
+                    m_teacher = st.selectbox("先生役（任意）", ["なし"] + list(staff_options.keys()), key="m_teacher")
+                with mec2:
+                    m_start = st.time_input("開始時間", value=time_type(10,0), key="m_start")
+                    m_dur   = st.number_input("所要時間（時間）", min_value=0.5, value=2.0, step=0.5, key="m_dur")
+                    m_calc_end = calc_end_time(m_start, m_dur)
+                    st.markdown(f'<div class="info-box">終了時間: <strong>{m_calc_end}</strong></div>', unsafe_allow_html=True)
+
+                # 生徒役（複数選択）
+                m_students = st.multiselect("参加者（生徒役・複数選択可）*", list(staff_options.keys()), key="m_students")
+                mec3, mec4 = st.columns(2)
+                with mec3: m_location = st.text_input("📍 場所（任意）", key="m_loc")
+                with mec4: m_memo = st.text_input("メモ（任意）", key="m_memo")
+
+                if st.form_submit_button("全員に予定を追加する"):
+                    # 対象者リストを作成（先生+生徒、重複排除）
+                    targets = []
+                    if m_teacher != "なし":
+                        targets.append((m_teacher, "先生"))
+                    for stu in m_students:
+                        if stu != m_teacher:  # 先生と重複しない
+                            targets.append((stu, "参加者"))
+
+                    if not targets:
+                        st.markdown('<div class="err-box">先生役または参加者を1人以上選んでください</div>', unsafe_allow_html=True)
+                    else:
+                        success_count = 0
+                        warn_list = []
+                        for staff_name_t, role in targets:
+                            tsid = staff_options[staff_name_t]
+                            tstaff_row = active_staff[active_staff["id"] == tsid].iloc[0]
+                            tskills = parse_json_field(tstaff_row.get("skills"), [])
+
+                            # 出勤日チェック
+                            t_is_work, t_ws, t_we = get_workday(tsid, m_date, workdays_df)
+                            t_status = "confirmed"; t_reasons = []; t_holiday = False
+                            if not t_is_work:
+                                t_status = "need_action"
+                                t_reasons.append(f"{staff_name_t}さんは出勤日ではありません")
+                                t_holiday = True
+
+                            # メモに役割を追記
+                            role_memo = f"[{role}] " + (m_memo.strip() if m_memo.strip() else "")
+
+                            res = sb_insert("staff_events", {
+                                "staff_id":        tsid,
+                                "task_type":       m_task,
+                                "event_date":      str(m_date),
+                                "planned_start":   fmt_time(m_start),
+                                "planned_end":     m_calc_end,
+                                "location":        m_location.strip() or None,
+                                "memo":            role_memo.strip() or None,
+                                "status":          t_status,
+                                "is_holiday_work": t_holiday,
+                                "adjust_reason":   " / ".join(t_reasons) if t_reasons else None,
+                            })
+                            if res:
+                                success_count += 1
+                                if t_reasons:
+                                    warn_list.append(f"{staff_name_t}: {' / '.join(t_reasons)}")
+
+                        st.markdown(f'<div class="success-box">✅ {success_count}名に「{m_task}」を登録しました</div>', unsafe_allow_html=True)
+                        if warn_list:
+                            st.markdown('<div class="err-box">⚠️ 以下は調整が必要です:<br>' + "<br>".join(warn_list) + '</div>', unsafe_allow_html=True)
+                        st.cache_data.clear()
 
 # ════════════════════════════════════════════════════════
 # タブ5: 設定（業務種類の追加・編集・削除）
