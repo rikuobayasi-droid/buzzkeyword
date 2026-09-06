@@ -371,12 +371,13 @@ with tab_timeline:
                     q_task  = st.selectbox("業務", q_task_names, key="q_task")
                 with qc2:
                     q_start = st.time_input("開始", value=time_type(10,0), key="q_start")
-                    q_dur   = st.number_input("所要時間", min_value=0.5, value=2.0, step=0.5, key="q_dur")
+                    q_dur   = st.number_input("所要時間（時間）", min_value=0.5, value=2.0, step=0.5, key="q_dur")
                 with qc3:
                     q_loc  = st.text_input("📍場所", key="q_loc")
-                    q_calc_end = calc_end_time(q_start, q_dur)
-                    st.caption(f"終了: {q_calc_end}")
+                    st.caption("終了時刻は追加時に自動計算されます")
                 if st.form_submit_button("追加する"):
+                    # 送信時に終了時刻を計算（フォーム内の最新値を使用）
+                    q_calc_end = calc_end_time(q_start, q_dur)
                     qsid = q_staff_options[q_staff]
                     qstaff_row = staff_df[staff_df["id"] == qsid].iloc[0]
                     qskills = parse_json_field(qstaff_row.get("skills"), [])
@@ -386,7 +387,7 @@ with tab_timeline:
                         q_status = "need_action"; q_reasons.append("出勤日ではありません"); q_holiday = True
                     if qskills and q_task not in qskills:
                         q_status = "need_action"; q_reasons.append(f"「{q_task}」を担当できません")
-                    sb_insert("staff_events", {
+                    res = sb_insert("staff_events", {
                         "staff_id":        qsid,
                         "task_type":       q_task,
                         "event_date":      str(view_date),
@@ -397,7 +398,11 @@ with tab_timeline:
                         "is_holiday_work": q_holiday,
                         "adjust_reason":   " / ".join(q_reasons) if q_reasons else None,
                     })
-                    st.cache_data.clear(); st.rerun()
+                    if res:
+                        st.markdown(f'<div class="success-box">✅ {q_staff}さんに「{q_task}」（{fmt_time(q_start)}〜{q_calc_end}）を追加しました</div>', unsafe_allow_html=True)
+                        st.cache_data.clear(); st.rerun()
+                    else:
+                        st.markdown('<div class="err-box">追加に失敗しました</div>', unsafe_allow_html=True)
 
         # 予定詳細・実績記録
         st.markdown('<div class="section-head">予定詳細・実績記録</div>', unsafe_allow_html=True)
@@ -947,13 +952,13 @@ with tab_events:
                 with ec2:
                     ev_start = st.time_input("開始時間", value=time_type(10,0))
                     ev_dur   = st.number_input("所要時間（時間）", min_value=0.5, value=2.0, step=0.5)
-                    calc_end = calc_end_time(ev_start, ev_dur)
-                    st.markdown(f'<div class="info-box">終了時間（自動計算）: <strong>{calc_end}</strong></div>', unsafe_allow_html=True)
+                    st.caption("終了時刻は追加時に自動計算されます")
                 ec3, ec4 = st.columns(2)
                 with ec3: ev_location = st.text_input("📍 場所（任意）", placeholder="例: 渋谷")
                 with ec4: ev_memo = st.text_input("メモ（任意）")
 
                 if st.form_submit_button("予定を追加する"):
+                    calc_end = calc_end_time(ev_start, ev_dur)
                     sid = staff_options[ev_staff]
                     staff_row = active_staff[active_staff["id"] == sid].iloc[0]
                     skills = parse_json_field(staff_row.get("skills"), [])
@@ -1038,8 +1043,7 @@ with tab_events:
                 with mec2:
                     m_start = st.time_input("開始時間", value=time_type(10,0), key="m_start")
                     m_dur   = st.number_input("所要時間（時間）", min_value=0.5, value=2.0, step=0.5, key="m_dur")
-                    m_calc_end = calc_end_time(m_start, m_dur)
-                    st.markdown(f'<div class="info-box">終了時間: <strong>{m_calc_end}</strong></div>', unsafe_allow_html=True)
+                    st.caption("終了時刻は追加時に自動計算されます")
 
                 # 生徒役（複数選択）
                 m_students = st.multiselect("参加者（生徒役・複数選択可）*", list(staff_options.keys()), key="m_students")
@@ -1048,6 +1052,7 @@ with tab_events:
                 with mec4: m_memo = st.text_input("メモ（任意）", key="m_memo")
 
                 if st.form_submit_button("全員に予定を追加する"):
+                    m_calc_end = calc_end_time(m_start, m_dur)
                     # 対象者リストを作成（先生+生徒、重複排除）
                     targets = []
                     if m_teacher != "なし":
