@@ -168,9 +168,9 @@ with tab_timeline:
         if st.button("今日", type="primary", key="today_btn"):
             st.session_state["sched_date"] = date.today(); st.rerun()
 
-    # 選択日を中心に前後の日付ボタンを横並び表示（前2日〜後4日 = 7個）
+    # 選択日を中心に前後±3日の日付ボタンを横並び表示（7個）
     base = view_date
-    date_range = [base + timedelta(days=offset) for offset in range(-2, 5)]
+    date_range = [base + timedelta(days=offset) for offset in range(-3, 4)]
     cols = st.columns(len(date_range))
     for idx, d in enumerate(date_range):
         with cols[idx]:
