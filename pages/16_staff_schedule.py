@@ -168,16 +168,17 @@ with tab_timeline:
         if st.button("今日", type="primary", key="today_btn"):
             st.session_state["sched_date"] = date.today(); st.rerun()
 
-    # 選択日を中心に前後の日付ボタンを横並び表示（前3日〜後5日）
+    # 選択日を中心に前後の日付ボタンを横並び表示（前2日〜後4日 = 7個）
     base = view_date
-    date_range = [base + timedelta(days=offset) for offset in range(-2, 9)]
+    date_range = [base + timedelta(days=offset) for offset in range(-2, 5)]
     cols = st.columns(len(date_range))
     for idx, d in enumerate(date_range):
         with cols[idx]:
             is_selected = (d == view_date)
-            label = f"{d.day:02d}日({WEEKDAY_JP[d.weekday()]})"
+            label = f"{d.month}/{d.day}\n{WEEKDAY_JP[d.weekday()]}"
             if st.button(label, key=f"dsel_{d}",
-                         type="primary" if is_selected else "secondary"):
+                         type="primary" if is_selected else "secondary",
+                         use_container_width=True):
                 st.session_state["sched_date"] = d; st.rerun()
 
     view_date = st.session_state["sched_date"]
