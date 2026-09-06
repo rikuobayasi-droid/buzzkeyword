@@ -69,7 +69,11 @@ def load_all():
         breaks = to_df(sb_select("staff_breaks", order="break_date"))
     except Exception:
         breaks = pd.DataFrame()
-    return tasks, staff, events, workdays, breaks
+    try:
+        holidays = to_df(sb_select("staff_holidays", order="holiday_date"))
+    except Exception:
+        holidays = pd.DataFrame()
+    return tasks, staff, events, workdays, breaks, holidays
 
 def get_event_breaks(event_id, breaks_df):
     """指定予定の休憩リストを返す"""
@@ -83,12 +87,52 @@ def hour_in_break(h, event_id, breaks_df):
     for _, br in eb.iterrows():
         bs = time_to_float(br.get("start_time"))
         be = time_to_float(br.get("end_time"))
-        # 休憩中（終了未定）の場合は開始以降すべて休憩扱い
         if bs is not None and be is None and bool(br.get("is_ongoing", False)):
             if h >= bs: return True
         elif bs is not None and be is not None:
             if bs <= h < be: return True
     return False
+
+def get_workday_v2(staff_row, target_date, workdays_df, holidays_df):
+    """
+    雇用形態を考慮した出勤判定。
+    戻り: (出勤か, 開始, 終了)
+
+    parttime（アルバイト・業務委託）: staff_work_days に登録があれば出勤
+    fulltime（契約社員・正社員）: staff_holidays に休日登録がなければ出勤（デフォルト勤務時間）
+                                  ただし staff_work_days に個別登録があればそれを優先
+    """
+    sid = int(staff_row["id"])
+    emp_type = staff_row.get("employment_type", "parttime") or "parttime"
+
+    # まず staff_work_days の個別登録を確認（両形態共通で優先）
+    if not workdays_df.empty:
+        wd = workdays_df[
+            (workdays_df["staff_id"] == sid) &
+            (workdays_df["work_date"].astype(str) == str(target_date))
+        ]
+        if not wd.empty:
+            row = wd.iloc[0]
+            return True, row.get("start_time"), row.get("end_time")
+
+    if emp_type == "fulltime":
+        # 正社員: 休日登録がなければ出勤
+        is_holiday = False
+        if not holidays_df.empty:
+            hd = holidays_df[
+                (holidays_df["staff_id"] == sid) &
+                (holidays_df["holiday_date"].astype(str) == str(target_date))
+            ]
+            is_holiday = not hd.empty
+        if is_holiday:
+            return False, None, None
+        # 出勤（デフォルト勤務時間）
+        d_start = staff_row.get("default_start", "10:00") or "10:00"
+        d_end   = staff_row.get("default_end", "19:00") or "19:00"
+        return True, d_start, d_end
+    else:
+        # アルバイト・業務委託: staff_work_days に登録がなければ休み
+        return False, None, None
 
 def get_task_color(task_name, tasks_df):
     if not tasks_df.empty:
@@ -96,19 +140,15 @@ def get_task_color(task_name, tasks_df):
         if not m.empty: return m.iloc[0].get("color", "#3b82f6")
     return "#3b82f6"
 
-def get_workday(staff_id, target_date, workdays_df):
-    """指定スタッフの指定日の出勤情報を返す。戻り: (出勤か, 開始, 終了)"""
-    if workdays_df.empty: return False, None, None
-    wd = workdays_df[
-        (workdays_df["staff_id"] == staff_id) &
-        (workdays_df["work_date"].astype(str) == str(target_date))
-    ]
-    if wd.empty: return False, None, None
-    row = wd.iloc[0]
-    return True, row.get("start_time"), row.get("end_time")
-
 # ════════════════════════════════════════════════════════
-tasks_df, staff_df, events_df, workdays_df, breaks_df = load_all()
+tasks_df, staff_df, events_df, workdays_df, breaks_df, holidays_df = load_all()
+
+# 後方互換: 旧 get_workday を新ロジックにブリッジ
+def get_workday(staff_id, target_date, workdays_df):
+    if staff_df.empty: return False, None, None
+    sr = staff_df[staff_df["id"] == staff_id]
+    if sr.empty: return False, None, None
+    return get_workday_v2(sr.iloc[0], target_date, workdays_df, holidays_df)
 
 st.markdown('<div class="page-title">スタッフ・スケジュール管理</div>', unsafe_allow_html=True)
 
@@ -597,7 +637,8 @@ with tab_calendar:
             html += f'<tr><td style="position:sticky;left:0;background:#f9fafb;font-weight:600;padding:6px 10px;border:1px solid #ddd;z-index:1;">{sname}</td>'
             for d in days:
                 dstr = str(d)
-                is_work = (sid, dstr) in workday_set
+                # 雇用形態を考慮した出勤判定
+                is_work, _, _ = get_workday_v2(s, d, workdays_df, holidays_df)
                 ev_count = event_set.get((sid, dstr), 0)
                 if is_work:
                     work_count += 1
@@ -626,11 +667,10 @@ with tab_calendar:
 
         # その月の集計
         st.markdown('<div class="section-head">月間サマリー</div>', unsafe_allow_html=True)
-        total_workdays = len(workday_set & {(sid, str(d)) for sid in active_staff_cal["id"].astype(int) for d in days}) if not active_staff_cal.empty else 0
         summary_rows = []
         for _, s in active_staff_cal.iterrows():
             sid = int(s["id"])
-            wc = sum(1 for d in days if (sid, str(d)) in workday_set)
+            wc = sum(1 for d in days if get_workday_v2(s, d, workdays_df, holidays_df)[0])
             ec = sum(event_set.get((sid, str(d)), 0) for d in days)
             summary_rows.append({"従業員": s["name"], "出勤日数": wc, "予定件数": ec})
         if summary_rows:
@@ -650,19 +690,29 @@ with tab_staff:
             new_name  = st.text_input("名前 *")
             new_email = st.text_input("メール（任意）")
             new_phone = st.text_input("電話（任意）")
+            new_emp = st.selectbox("雇用形態 *",
+                ["アルバイト・業務委託（出勤日を登録）", "契約社員・正社員（休日を登録）"])
         with ac2:
             new_skills = st.multiselect("担当可能な業務", task_names)
-            new_note   = st.text_area("メモ", height=80)
+            st.caption("正社員のデフォルト勤務時間（変更可）")
+            dc1, dc2 = st.columns(2)
+            with dc1: new_dstart = st.time_input("開始", value=time_type(10,0), key="new_dstart")
+            with dc2: new_dend   = st.time_input("終了", value=time_type(19,0), key="new_dend")
+            new_note   = st.text_area("メモ", height=68)
         if st.form_submit_button("従業員を登録する"):
             if not new_name.strip():
                 st.markdown('<div class="err-box">名前は必須です</div>', unsafe_allow_html=True)
             else:
+                emp_type = "fulltime" if "正社員" in new_emp else "parttime"
                 res = sb_insert("staff_members", {
                     "name":      new_name.strip(),
                     "email":     new_email.strip() or None,
                     "phone":     new_phone.strip() or None,
                     "skills":    json.dumps(new_skills, ensure_ascii=False),
-                    "work_schedule": "{}",  # 廃止（互換のため空）
+                    "work_schedule": "{}",
+                    "employment_type": emp_type,
+                    "default_start": fmt_time(new_dstart),
+                    "default_end":   fmt_time(new_dend),
                     "note":      new_note.strip() or None,
                     "is_active": True,
                 })
@@ -670,9 +720,9 @@ with tab_staff:
                     st.markdown('<div class="success-box">登録しました</div>', unsafe_allow_html=True)
                     st.cache_data.clear(); st.rerun()
 
-    # 出勤日を登録
-    st.markdown('<div class="section-head">出勤日を登録</div>', unsafe_allow_html=True)
-    st.caption("出勤する日付と勤務時間を登録します。登録した日だけが「出勤日」になります。")
+    # 出勤日を登録（アルバイト・業務委託用）
+    st.markdown('<div class="section-head">出勤日を登録（アルバイト・業務委託）</div>', unsafe_allow_html=True)
+    st.caption("アルバイト・業務委託の方の出勤日と勤務時間を登録します。正社員の個別勤務時間の上書きにも使えます。")
     if staff_df.empty:
         st.markdown('<div class="info-box">先に従業員を登録してください</div>', unsafe_allow_html=True)
     else:
@@ -682,11 +732,10 @@ with tab_staff:
             wc1, wc2, wc3, wc4 = st.columns(4)
             with wc1: wd_staff = st.selectbox("従業員 *", list(staff_options.keys()))
             with wc2: wd_date  = st.date_input("出勤日 *", value=date.today())
-            with wc3: wd_start = st.time_input("開始", value=time_type(9,0))
-            with wc4: wd_end   = st.time_input("終了", value=time_type(18,0))
+            with wc3: wd_start = st.time_input("開始", value=time_type(10,0))
+            with wc4: wd_end   = st.time_input("終了", value=time_type(19,0))
             if st.form_submit_button("出勤日を登録する"):
                 sid = staff_options[wd_staff]
-                # 同じ日付が既にあれば更新、なければ追加
                 existing_wd = pd.DataFrame()
                 if not workdays_df.empty:
                     existing_wd = workdays_df[
@@ -698,7 +747,7 @@ with tab_staff:
                         "start_time": fmt_time(wd_start),
                         "end_time":   fmt_time(wd_end),
                     }, {"id": int(existing_wd.iloc[0]["id"])})
-                    st.markdown(f'<div class="success-box">{wd_staff}さんの{wd_date}の出勤時間を更新しました</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="success-box">{wd_staff}さんの{wd_date}の勤務時間を更新しました</div>', unsafe_allow_html=True)
                 else:
                     sb_insert("staff_work_days", {
                         "staff_id":   sid,
@@ -708,6 +757,60 @@ with tab_staff:
                     })
                     st.markdown(f'<div class="success-box">{wd_staff}さんの{wd_date}を出勤日として登録しました</div>', unsafe_allow_html=True)
                 st.cache_data.clear(); st.rerun()
+
+    # 休日を登録（契約社員・正社員用）
+    st.markdown('<div class="section-head">休日を登録（契約社員・正社員）</div>', unsafe_allow_html=True)
+    st.caption("正社員・契約社員の方の休日を登録します。休日以外は自動的に出勤（デフォルト勤務時間）になります。")
+    if not staff_df.empty:
+        # 正社員のみ選択肢に
+        fulltime_staff = active_staff[active_staff["employment_type"] == "fulltime"] if "employment_type" in active_staff.columns else pd.DataFrame()
+        if fulltime_staff.empty:
+            st.markdown('<div class="info-box">契約社員・正社員が登録されていません</div>', unsafe_allow_html=True)
+        else:
+            ft_options = {s["name"]: int(s["id"]) for _, s in fulltime_staff.iterrows()}
+            with st.form(key="add_holiday_form"):
+                hc1, hc2, hc3 = st.columns([2, 2, 1])
+                with hc1: hd_staff = st.selectbox("従業員 *", list(ft_options.keys()), key="hd_staff")
+                with hc2: hd_date  = st.date_input("休日 *", value=date.today(), key="hd_date")
+                with hc3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    hd_submit = st.form_submit_button("休日を登録")
+                if hd_submit:
+                    sid = ft_options[hd_staff]
+                    existing_hd = pd.DataFrame()
+                    if not holidays_df.empty:
+                        existing_hd = holidays_df[
+                            (holidays_df["staff_id"] == sid) &
+                            (holidays_df["holiday_date"].astype(str) == str(hd_date))
+                        ]
+                    if existing_hd.empty:
+                        sb_insert("staff_holidays", {"staff_id": sid, "holiday_date": str(hd_date)})
+                        st.markdown(f'<div class="success-box">{hd_staff}さんの{hd_date}を休日として登録しました</div>', unsafe_allow_html=True)
+                        st.cache_data.clear(); st.rerun()
+                    else:
+                        st.markdown('<div class="info-box">既に休日として登録されています</div>', unsafe_allow_html=True)
+
+            # 登録済み休日一覧
+            if not holidays_df.empty:
+                ft_ids = list(ft_options.values())
+                future_hd = holidays_df[
+                    (holidays_df["staff_id"].isin(ft_ids)) &
+                    (holidays_df["holiday_date"].astype(str) >= str(date.today()))
+                ].sort_values("holiday_date")
+                if not future_hd.empty:
+                    st.markdown("**今後の休日:**")
+                    for _, hd in future_hd.iterrows():
+                        hdid = int(hd["id"])
+                        hd_sname = "不明"
+                        sm = fulltime_staff[fulltime_staff["id"] == hd["staff_id"]]
+                        if not sm.empty: hd_sname = sm.iloc[0]["name"]
+                        hc1, hc2 = st.columns([4, 1])
+                        with hc1:
+                            st.caption(f"{hd_sname} — {hd['holiday_date']}")
+                        with hc2:
+                            if st.button("削除", key=f"delhd_{hdid}"):
+                                sb_delete("staff_holidays", {"id": hdid})
+                                st.cache_data.clear(); st.rerun()
 
     # 従業員一覧
     st.markdown('<div class="section-head">従業員一覧</div>', unsafe_allow_html=True)
@@ -726,8 +829,13 @@ with tab_staff:
                     (workdays_df["work_date"].astype(str) >= str(date.today()))
                 ].sort_values("work_date")
 
-            with st.expander(f"{'🟢' if active else '⚫'} {s['name']} | 担当: {', '.join(skills) if skills else '未設定'} | 今後の出勤 {len(future_wd)}日"):
+            emp_type = s.get("employment_type", "parttime") or "parttime"
+            emp_label = "契約社員・正社員" if emp_type == "fulltime" else "アルバイト・業務委託"
+            with st.expander(f"{'🟢' if active else '⚫'} {s['name']} | {emp_label} | 担当: {', '.join(skills) if skills else '未設定'}"):
+                st.markdown(f"**雇用形態:** {emp_label}")
                 st.markdown(f"**担当可能業務:** {', '.join(skills) if skills else '未設定'}")
+                if emp_type == "fulltime":
+                    st.markdown(f"**デフォルト勤務時間:** {fmt_time(s.get('default_start','10:00'))}〜{fmt_time(s.get('default_end','19:00'))}")
                 if s.get("email"): st.markdown(f"**メール:** {s['email']}")
                 if s.get("phone"): st.markdown(f"**電話:** {s['phone']}")
 
