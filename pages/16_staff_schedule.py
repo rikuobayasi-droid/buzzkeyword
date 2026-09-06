@@ -297,7 +297,11 @@ with tab_timeline:
                                 row_html += '<div style="flex:1;background:#f59e0b;color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="休憩中">🍽️休憩</div>'
                             else:
                                 color = get_task_color(ev["task_type"], tasks_df)
-                                row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="{ev["task_type"]}">{ev["task_type"][:4]}</div>'
+                                # 複数人予定は👥アイコン付き+枠線で強調
+                                if bool(ev.get("is_group", False)):
+                                    row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:34px;font-size:.62rem;overflow:hidden;white-space:nowrap;border:2px solid #7c3aed;box-sizing:border-box;" title="複数人予定: {ev["task_type"]}">👥{ev["task_type"][:3]}</div>'
+                                else:
+                                    row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="{ev["task_type"]}">{ev["task_type"][:4]}</div>'
                         elif is_work and w_start_f <= h < w_end_f:
                             row_html += '<div style="flex:1;background:#ecfdf5;border:1px dashed #a7f3d0;" title="空き"></div>'
                         else:
@@ -309,6 +313,7 @@ with tab_timeline:
                         '<span style="background:#ecfdf5;border:1px dashed #a7f3d0;padding:2px 8px;">空き</span> '
                         '<span style="background:#f3f4f6;padding:2px 8px;">休日</span> '
                         '<span style="background:#f59e0b;color:white;padding:2px 8px;">🍽️休憩</span> '
+                        '<span style="border:2px solid #7c3aed;padding:1px 8px;">👥複数人予定</span> '
                         '各色=業務種類</div>', unsafe_allow_html=True)
         else:
             # ── リスト表示（スマホ向け）──────────────────────────────────────
@@ -330,10 +335,14 @@ with tab_timeline:
                         for _, ev in s_events.iterrows():
                             color = get_task_color(ev["task_type"], tasks_df)
                             loc = f' 📍{ev["location"]}' if ev.get("location") else ''
+                            is_grp = bool(ev.get("is_group", False))
+                            grp_icon = "👥 " if is_grp else ""
+                            border_color = "#7c3aed" if is_grp else color
+                            grp_label = ' <span style="background:#7c3aed;color:white;padding:1px 6px;border-radius:4px;font-size:.7rem;">研修</span>' if is_grp else ''
                             st.markdown(
-                                f'<div style="display:flex;align-items:center;padding:6px 12px;margin:2px 0 2px 16px;border-left:4px solid {color};background:#fafafa;">'
+                                f'<div style="display:flex;align-items:center;padding:6px 12px;margin:2px 0 2px 16px;border-left:4px solid {border_color};background:#fafafa;">'
                                 f'<span style="font-weight:600;color:{color};min-width:90px;">{fmt_time(ev["planned_start"])}〜{fmt_time(ev["planned_end"])}</span>'
-                                f'<span style="margin-left:8px;">{ev["task_type"]}{loc}</span></div>',
+                                f'<span style="margin-left:8px;">{grp_icon}{ev["task_type"]}{loc}{grp_label}</span></div>',
                                 unsafe_allow_html=True
                             )
                             # この予定の休憩を表示
@@ -1078,6 +1087,7 @@ with tab_events:
                                 "memo":            role_memo.strip() or None,
                                 "status":          t_status,
                                 "is_holiday_work": t_holiday,
+                                "is_group":        True,
                                 "adjust_reason":   " / ".join(t_reasons) if t_reasons else None,
                             })
                             if res:
