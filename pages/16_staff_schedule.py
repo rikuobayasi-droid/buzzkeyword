@@ -915,7 +915,7 @@ with tab_staff:
                         st.markdown(f'<div class="success-box">{hd_staff}さんの{hd_date}を「{HOLIDAY_TYPES[hd_type][0]}」に更新しました</div>', unsafe_allow_html=True)
                         st.cache_data.clear(); st.rerun()
 
-            # 登録済み休日一覧
+            # 登録済み休日一覧（折りたたみ・編集可能）
             if not holidays_df.empty:
                 ft_ids = list(ft_options.values())
                 future_hd = holidays_df[
@@ -923,24 +923,67 @@ with tab_staff:
                     (holidays_df["holiday_date"].astype(str) >= str(date.today()))
                 ].sort_values("holiday_date")
                 if not future_hd.empty:
-                    st.markdown("**今後の休日:**")
-                    for _, hd in future_hd.iterrows():
-                        hdid = int(hd["id"])
-                        hd_sname = "不明"
-                        sm = fulltime_staff[fulltime_staff["id"] == hd["staff_id"]]
-                        if not sm.empty: hd_sname = sm.iloc[0]["name"]
-                        htype = hd.get("holiday_type", "regular") or "regular"
-                        htype_label = HOLIDAY_TYPES.get(htype, ("休日","休"))[0]
-                        half_info = ""
-                        if htype == "half" and hd.get("half_start"):
-                            half_info = f" {fmt_time(hd.get('half_start'))}〜{fmt_time(hd.get('half_end'))}"
-                        hc1, hc2 = st.columns([4, 1])
-                        with hc1:
-                            st.caption(f"{hd_sname} — {hd['holiday_date']} 【{htype_label}】{half_info}")
-                        with hc2:
-                            if st.button("削除", key=f"delhd_{hdid}"):
-                                sb_delete("staff_holidays", {"id": hdid})
-                                st.cache_data.clear(); st.rerun()
+                    with st.expander(f"今後の休日を確認・編集（{len(future_hd)}件）"):
+                        for hi, (_, hd) in enumerate(future_hd.iterrows()):
+                            hdid = int(hd["id"])
+                            hd_sname = "不明"
+                            sm = fulltime_staff[fulltime_staff["id"] == hd["staff_id"]]
+                            if not sm.empty: hd_sname = sm.iloc[0]["name"]
+                            htype = hd.get("holiday_type", "regular") or "regular"
+                            htype_label = HOLIDAY_TYPES.get(htype, ("休日","休"))[0]
+                            half_info = ""
+                            if htype == "half" and hd.get("half_start"):
+                                half_info = f" {fmt_time(hd.get('half_start'))}〜{fmt_time(hd.get('half_end'))}"
+
+                            with st.expander(f"{hd_sname} — {hd['holiday_date']} 【{htype_label}】{half_info}"):
+                                with st.form(key=f"edit_hd_{hdid}_{hi}"):
+                                    ehc1, ehc2 = st.columns(2)
+                                    with ehc1:
+                                        try:
+                                            cur_hd_date = pd.to_datetime(hd["holiday_date"]).date()
+                                        except Exception:
+                                            cur_hd_date = date.today()
+                                        e_hd_date = st.date_input("休日", value=cur_hd_date, key=f"ehd_date_{hdid}_{hi}")
+                                    with ehc2:
+                                        e_hd_type = st.selectbox("種類",
+                                            list(HOLIDAY_TYPES.keys()),
+                                            index=list(HOLIDAY_TYPES.keys()).index(htype) if htype in HOLIDAY_TYPES else 0,
+                                            format_func=lambda x: f"{HOLIDAY_TYPES[x][0]}（{HOLIDAY_TYPES[x][1]}）",
+                                            key=f"ehd_type_{hdid}_{hi}")
+                                    # 半休の時間
+                                    if e_hd_type == "half":
+                                        ehhc1, ehhc2 = st.columns(2)
+                                        with ehhc1:
+                                            try:
+                                                hs_parts = fmt_time(hd.get("half_start","10:00")).split(":")
+                                                cur_hs = time_type(int(hs_parts[0]), int(hs_parts[1]))
+                                            except Exception:
+                                                cur_hs = time_type(10,0)
+                                            e_hs = st.time_input("半休開始", value=cur_hs, key=f"ehs_{hdid}_{hi}")
+                                        with ehhc2:
+                                            try:
+                                                he_parts = fmt_time(hd.get("half_end","14:00")).split(":")
+                                                cur_he = time_type(int(he_parts[0]), int(he_parts[1]))
+                                            except Exception:
+                                                cur_he = time_type(14,0)
+                                            e_he = st.time_input("半休終了", value=cur_he, key=f"ehe_{hdid}_{hi}")
+                                    else:
+                                        e_hs = None; e_he = None
+
+                                    ebc1, ebc2 = st.columns(2)
+                                    with ebc1:
+                                        if st.form_submit_button("✏️ 更新"):
+                                            sb_update("staff_holidays", {
+                                                "holiday_date": str(e_hd_date),
+                                                "holiday_type": e_hd_type,
+                                                "half_start":   fmt_time(e_hs) if e_hs else None,
+                                                "half_end":     fmt_time(e_he) if e_he else None,
+                                            }, {"id": hdid})
+                                            st.cache_data.clear(); st.rerun()
+                                    with ebc2:
+                                        if st.form_submit_button("🗑️ 削除"):
+                                            sb_delete("staff_holidays", {"id": hdid})
+                                            st.cache_data.clear(); st.rerun()
 
     # 従業員一覧
     st.markdown('<div class="section-head">従業員一覧</div>', unsafe_allow_html=True)
@@ -969,21 +1012,42 @@ with tab_staff:
                 if s.get("email"): st.markdown(f"**メール:** {s['email']}")
                 if s.get("phone"): st.markdown(f"**電話:** {s['phone']}")
 
-                # 今後の出勤日一覧
+                # 今後の出勤日一覧（折りたたみ・編集可能）
                 if not future_wd.empty:
-                    st.markdown("**今後の出勤日:**")
-                    for _, wd in future_wd.iterrows():
-                        wdid = int(wd["id"])
-                        wc1, wc2 = st.columns([4, 1])
-                        with wc1:
+                    with st.expander(f"今後の出勤日を確認・編集（{len(future_wd)}件）"):
+                        for wi, (_, wd) in enumerate(future_wd.iterrows()):
+                            wdid = int(wd["id"])
                             wdate = pd.to_datetime(wd["work_date"]).date()
-                            st.caption(f"{wd['work_date']}（{WEEKDAY_JP[wdate.weekday()]}） {fmt_time(wd['start_time'])}〜{fmt_time(wd['end_time'])}")
-                        with wc2:
-                            if st.button("削除", key=f"del_wd_{wdid}_{i}"):
-                                sb_delete("staff_work_days", {"id": wdid})
-                                st.cache_data.clear(); st.rerun()
-                else:
-                    st.caption("今後の出勤日は登録されていません")
+                            with st.form(key=f"edit_wd_{wdid}_{i}_{wi}"):
+                                ewc1, ewc2, ewc3 = st.columns([2, 2, 2])
+                                with ewc1:
+                                    st.caption(f"{wd['work_date']}（{WEEKDAY_JP[wdate.weekday()]}）")
+                                with ewc2:
+                                    try:
+                                        ws_p = fmt_time(wd["start_time"]).split(":")
+                                        cur_ws = time_type(int(ws_p[0]), int(ws_p[1]))
+                                    except Exception:
+                                        cur_ws = time_type(10,0)
+                                    e_ws = st.time_input("開始", value=cur_ws, key=f"ewds_{wdid}_{i}_{wi}", label_visibility="collapsed")
+                                with ewc3:
+                                    try:
+                                        we_p = fmt_time(wd["end_time"]).split(":")
+                                        cur_we = time_type(int(we_p[0]), int(we_p[1]))
+                                    except Exception:
+                                        cur_we = time_type(19,0)
+                                    e_we = st.time_input("終了", value=cur_we, key=f"ewde_{wdid}_{i}_{wi}", label_visibility="collapsed")
+                                ewbc1, ewbc2 = st.columns(2)
+                                with ewbc1:
+                                    if st.form_submit_button("✏️ 更新"):
+                                        sb_update("staff_work_days", {
+                                            "start_time": fmt_time(e_ws),
+                                            "end_time":   fmt_time(e_we),
+                                        }, {"id": wdid})
+                                        st.cache_data.clear(); st.rerun()
+                                with ewbc2:
+                                    if st.form_submit_button("🗑️ 削除"):
+                                        sb_delete("staff_work_days", {"id": wdid})
+                                        st.cache_data.clear(); st.rerun()
 
                 # ── 従業員情報を編集 ────────────────────────────────────────
                 st.markdown("---")
