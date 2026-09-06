@@ -855,6 +855,54 @@ with tab_staff:
                 else:
                     st.caption("今後の出勤日は登録されていません")
 
+                # ── 従業員情報を編集 ────────────────────────────────────────
+                st.markdown("---")
+                st.markdown("**従業員情報を編集**")
+                with st.form(key=f"edit_staff_{sid}_{i}"):
+                    esc1, esc2 = st.columns(2)
+                    with esc1:
+                        e_name  = st.text_input("名前", value=s["name"], key=f"esn_{sid}_{i}")
+                        e_email = st.text_input("メール", value=s.get("email","") or "", key=f"ese_{sid}_{i}")
+                        e_phone = st.text_input("電話", value=s.get("phone","") or "", key=f"esp_{sid}_{i}")
+                        # 雇用形態
+                        emp_opts = ["アルバイト・業務委託（出勤日を登録）", "契約社員・正社員（休日を登録）"]
+                        cur_emp_idx = 1 if emp_type == "fulltime" else 0
+                        e_emp = st.selectbox("雇用形態", emp_opts, index=cur_emp_idx, key=f"esemp_{sid}_{i}")
+                    with esc2:
+                        e_skills = st.multiselect("担当可能な業務", task_names, default=[sk for sk in skills if sk in task_names], key=f"essk_{sid}_{i}")
+                        st.caption("正社員のデフォルト勤務時間")
+                        edc1, edc2 = st.columns(2)
+                        with edc1:
+                            try:
+                                ds_parts = fmt_time(s.get("default_start","10:00")).split(":")
+                                cur_dstart = time_type(int(ds_parts[0]), int(ds_parts[1]))
+                            except Exception:
+                                cur_dstart = time_type(10, 0)
+                            e_dstart = st.time_input("開始", value=cur_dstart, key=f"esds_{sid}_{i}")
+                        with edc2:
+                            try:
+                                de_parts = fmt_time(s.get("default_end","19:00")).split(":")
+                                cur_dend = time_type(int(de_parts[0]), int(de_parts[1]))
+                            except Exception:
+                                cur_dend = time_type(19, 0)
+                            e_dend = st.time_input("終了", value=cur_dend, key=f"esde_{sid}_{i}")
+                        e_note = st.text_input("メモ", value=s.get("note","") or "", key=f"esnote_{sid}_{i}")
+
+                    if st.form_submit_button("✏️ 従業員情報を更新する"):
+                        new_emp_type = "fulltime" if "正社員" in e_emp else "parttime"
+                        sb_update("staff_members", {
+                            "name":            e_name.strip(),
+                            "email":           e_email.strip() or None,
+                            "phone":           e_phone.strip() or None,
+                            "skills":          json.dumps(e_skills, ensure_ascii=False),
+                            "employment_type": new_emp_type,
+                            "default_start":   fmt_time(e_dstart),
+                            "default_end":     fmt_time(e_dend),
+                            "note":            e_note.strip() or None,
+                        }, {"id": sid})
+                        st.markdown('<div class="success-box">更新しました</div>', unsafe_allow_html=True)
+                        st.cache_data.clear(); st.rerun()
+
                 bc1, bc2 = st.columns(2)
                 with bc1:
                     if st.button("無効化" if active else "有効化", key=f"toggle_staff_{sid}_{i}"):
