@@ -292,16 +292,29 @@ with tab_timeline:
                         if slot_events:
                             ev = slot_events[0]
                             eid_check = int(ev["id"])
+                            ps = time_to_float(ev["planned_start"])
+                            is_start_cell = (ps is not None and int(ps) == h)  # 予定開始時刻のセルか
+                            loc_text = str(ev.get("location","") or "")
+                            # ツールチップ（全情報）
+                            tip = f'{ev["task_type"]} {fmt_time(ev["planned_start"])}〜{fmt_time(ev["planned_end"])}'
+                            if loc_text: tip += f' 📍{loc_text}'
                             # この時刻が休憩時間内かチェック（休憩テーブルベース）
                             if hour_in_break(h, eid_check, breaks_df):
                                 row_html += '<div style="flex:1;background:#f59e0b;color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="休憩中">🍽️休憩</div>'
                             else:
                                 color = get_task_color(ev["task_type"], tasks_df)
-                                # 複数人予定は👥アイコン付き+枠線で強調
-                                if bool(ev.get("is_group", False)):
-                                    row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:34px;font-size:.62rem;overflow:hidden;white-space:nowrap;border:2px solid #7c3aed;box-sizing:border-box;" title="複数人予定: {ev["task_type"]}">👥{ev["task_type"][:3]}</div>'
+                                is_grp = bool(ev.get("is_group", False))
+                                # 表示テキスト: 開始セルは業務名、場所があれば次のセルで場所
+                                if is_start_cell:
+                                    label = ("👥" if is_grp else "") + ev["task_type"][:4]
+                                elif loc_text and ps is not None and int(ps) + 1 == h:
+                                    # 開始の次のセルに場所を表示
+                                    label = f'📍{loc_text[:4]}'
                                 else:
-                                    row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="{ev["task_type"]}">{ev["task_type"][:4]}</div>'
+                                    label = ""
+                                border_style = "border:2px solid #7c3aed;box-sizing:border-box;" if is_grp else ""
+                                line_h = "34px" if is_grp else "36px"
+                                row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:{line_h};font-size:.62rem;overflow:hidden;white-space:nowrap;{border_style}" title="{tip}">{label}</div>'
                         elif is_work and w_start_f <= h < w_end_f:
                             row_html += '<div style="flex:1;background:#ecfdf5;border:1px dashed #a7f3d0;" title="空き"></div>'
                         else:
