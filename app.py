@@ -146,6 +146,14 @@ with c1:
     if st.button("旅行需要スコア\n\n自社×市場の統合需要指標\n地域別需要分析\n需要インサイト自動生成\n\n→ /travel_demand", key="nav_demand"):
         st.switch_page("pages/15_travel_demand.py")
 
+# ── スタッフ管理 ──────────────────────────────────────────────────────────────
+st.markdown('<div class="cat-label">スタッフ管理</div>', unsafe_allow_html=True)
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    if st.button("スケジュール管理\n\n日別スタッフタイムライン\n勤務・予定・実績管理\n要対応・代替スタッフ候補\n\n→ /staff_schedule", key="nav_staff"):
+        st.switch_page("pages/16_staff_schedule.py")
+
 st.markdown("""
 <div style="text-align:center;margin-top:2.5rem;padding-top:1.5rem;border-top:1px solid #e5e7eb;">
   <span style="font-size:.72rem;color:#d1d5db;letter-spacing:1px;">Tabibiyori Dashboard — Japan Content Operations</span>
