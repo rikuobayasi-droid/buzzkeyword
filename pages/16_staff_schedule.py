@@ -364,16 +364,17 @@ with tab_timeline:
         with st.expander(f"＋ {view_date} に予定を追加"):
             q_staff_options = {s["name"]: int(s["id"]) for _, s in staff_df.iterrows() if s.get("is_active", True)}
             q_task_names = tasks_df["name"].tolist() if not tasks_df.empty else []
-            with st.form(key=f"quick_add_{view_date}"):
+            dkey = str(view_date)  # 日付ごとに一意なキー接尾辞
+            with st.form(key=f"quick_add_{dkey}"):
                 qc1, qc2, qc3 = st.columns(3)
                 with qc1:
-                    q_staff = st.selectbox("担当者", list(q_staff_options.keys()), key="q_staff")
-                    q_task  = st.selectbox("業務", q_task_names, key="q_task")
+                    q_staff = st.selectbox("担当者", list(q_staff_options.keys()), key=f"q_staff_{dkey}")
+                    q_task  = st.selectbox("業務", q_task_names, key=f"q_task_{dkey}")
                 with qc2:
-                    q_start = st.time_input("開始", value=time_type(10,0), key="q_start")
-                    q_dur   = st.number_input("所要時間（時間）", min_value=0.5, value=2.0, step=0.5, key="q_dur")
+                    q_start = st.time_input("開始", value=time_type(10,0), key=f"q_start_{dkey}")
+                    q_dur   = st.number_input("所要時間（時間）", min_value=0.5, value=2.0, step=0.5, key=f"q_dur_{dkey}")
                 with qc3:
-                    q_loc  = st.text_input("📍場所", key="q_loc")
+                    q_loc  = st.text_input("📍場所", key=f"q_loc_{dkey}")
                     st.caption("終了時刻は追加時に自動計算されます")
                 if st.form_submit_button("追加する"):
                     # 送信時に終了時刻を計算（フォーム内の最新値を使用）
