@@ -303,8 +303,15 @@ with tab_timeline:
                 s_events = day_events[day_events["staff_id"] == sid] if not day_events.empty else pd.DataFrame()
                 s_events = s_events[s_events["status"] != "cancelled"] if not s_events.empty else s_events
 
+                # 半休情報を取得
+                hinfo = get_holiday_info(sid, view_date, holidays_df)
+                is_half = hinfo and hinfo["type"] == "half"
+                half_ws = time_to_float(hinfo["half_start"]) if is_half and hinfo.get("half_start") else None
+                half_we = time_to_float(hinfo["half_end"]) if is_half and hinfo.get("half_end") else None
+
                 row_html = '<div style="display:flex;align-items:center;border-bottom:1px solid #e5e7eb;min-height:44px;">'
-                row_html += f'<div style="width:80px;flex-shrink:0;font-weight:600;font-size:.85rem;">{sname}</div>'
+                sname_label = sname + ("（半休）" if is_half else "")
+                row_html += f'<div style="width:80px;flex-shrink:0;font-weight:600;font-size:.8rem;">{sname_label}</div>'
                 row_html += '<div style="flex:1;display:flex;height:36px;">'
 
                 if not is_work and (s_events.empty):
@@ -345,6 +352,17 @@ with tab_timeline:
                                 border_style = "border:2px solid #7c3aed;box-sizing:border-box;" if is_grp else ""
                                 line_h = "34px" if is_grp else "36px"
                                 row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:{line_h};font-size:.62rem;overflow:hidden;white-space:nowrap;{border_style}" title="{tip}">{label}</div>'
+                        elif is_half and half_ws is not None and half_we is not None:
+                            # 半休の日: 業務時間帯（half_ws〜half_we）は空き、それ以外は半休
+                            if half_ws <= h < half_we:
+                                row_html += '<div style="flex:1;background:#ecfdf5;border:1px dashed #a7f3d0;" title="業務可能"></div>'
+                            elif w_start_f <= h < w_end_f:
+                                # 半休時間帯
+                                is_half_start = (int(half_we) == h) if half_we else False
+                                lbl = "半休" if (h == int(half_we) if half_we else False) else ""
+                                row_html += f'<div style="flex:1;background:#fed7aa;color:#c2410c;text-align:center;line-height:36px;font-size:.62rem;overflow:hidden;white-space:nowrap;" title="半休">{lbl}</div>'
+                            else:
+                                row_html += '<div style="flex:1;background:#fafafa;"></div>'
                         elif is_work and w_start_f <= h < w_end_f:
                             row_html += '<div style="flex:1;background:#ecfdf5;border:1px dashed #a7f3d0;" title="空き"></div>'
                         else:
@@ -355,6 +373,7 @@ with tab_timeline:
             st.markdown('<div style="margin-top:12px;font-size:.75rem;color:#6b7280;">凡例: '
                         '<span style="background:#ecfdf5;border:1px dashed #a7f3d0;padding:2px 8px;">空き</span> '
                         '<span style="background:#f3f4f6;padding:2px 8px;">休日</span> '
+                        '<span style="background:#fed7aa;color:#c2410c;padding:2px 8px;">半休</span> '
                         '<span style="background:#f59e0b;color:white;padding:2px 8px;">🍽️休憩</span> '
                         '<span style="border:2px solid #7c3aed;padding:1px 8px;">👥複数人予定</span> '
                         '各色=業務種類</div>', unsafe_allow_html=True)
@@ -369,11 +388,21 @@ with tab_timeline:
                 s_events = s_events[s_events["status"] != "cancelled"].sort_values("planned_start") if not s_events.empty else s_events
 
                 # スタッフ名ヘッダー
+                hinfo_m = get_holiday_info(sid, view_date, holidays_df)
+                is_half_m = hinfo_m and hinfo_m["type"] == "half"
                 if not is_work and s_events.empty:
                     st.markdown(f'<div style="padding:8px 12px;background:#f3f4f6;border-radius:8px;margin:6px 0;"><strong>{sname}</strong> <span style="color:#9ca3af;">休日</span></div>', unsafe_allow_html=True)
                 else:
-                    work_info = f'{fmt_time(w_start)}〜{fmt_time(w_end)} 勤務' if is_work else '休日出勤あり'
-                    st.markdown(f'<div style="padding:8px 12px;background:#eff6ff;border-radius:8px;margin:6px 0 2px;"><strong>{sname}</strong> <span style="color:#1e3a5f;font-size:.8rem;">{work_info}</span></div>', unsafe_allow_html=True)
+                    if is_half_m and hinfo_m.get("half_start"):
+                        work_info = f'半休 業務 {fmt_time(hinfo_m["half_start"])}〜{fmt_time(hinfo_m["half_end"])}（以降 半休）'
+                        bg_color = "#fff7ed"
+                    elif is_work:
+                        work_info = f'{fmt_time(w_start)}〜{fmt_time(w_end)} 勤務'
+                        bg_color = "#eff6ff"
+                    else:
+                        work_info = '休日出勤あり'
+                        bg_color = "#eff6ff"
+                    st.markdown(f'<div style="padding:8px 12px;background:{bg_color};border-radius:8px;margin:6px 0 2px;"><strong>{sname}</strong> <span style="color:#1e3a5f;font-size:.8rem;">{work_info}</span></div>', unsafe_allow_html=True)
                     if not s_events.empty:
                         for _, ev in s_events.iterrows():
                             color = get_task_color(ev["task_type"], tasks_df)
@@ -881,11 +910,12 @@ with tab_staff:
                         list(HOLIDAY_TYPES.keys()),
                         format_func=lambda x: f"{HOLIDAY_TYPES[x][0]}（{HOLIDAY_TYPES[x][1]}）",
                         key="hd_type")
-                    # 半休の場合のみ時間入力
+                    # 半休の場合のみ時間入力（業務する時間帯を指定）
                     if hd_type == "half":
+                        st.caption("半休: 業務する時間帯を指定してください（それ以外が半休になります）")
                         hhc1, hhc2 = st.columns(2)
-                        with hhc1: hd_hstart = st.time_input("半休開始", value=time_type(10,0), key="hd_hstart")
-                        with hhc2: hd_hend   = st.time_input("半休終了", value=time_type(14,0), key="hd_hend")
+                        with hhc1: hd_hstart = st.time_input("業務開始", value=time_type(10,0), key="hd_hstart")
+                        with hhc2: hd_hend   = st.time_input("業務終了", value=time_type(14,30), key="hd_hend")
                     else:
                         hd_hstart = None; hd_hend = None
 
@@ -950,8 +980,9 @@ with tab_staff:
                                             index=list(HOLIDAY_TYPES.keys()).index(htype) if htype in HOLIDAY_TYPES else 0,
                                             format_func=lambda x: f"{HOLIDAY_TYPES[x][0]}（{HOLIDAY_TYPES[x][1]}）",
                                             key=f"ehd_type_{hdid}_{hi}")
-                                    # 半休の時間
+                                    # 半休の時間（業務時間帯）
                                     if e_hd_type == "half":
+                                        st.caption("業務する時間帯（それ以外が半休）")
                                         ehhc1, ehhc2 = st.columns(2)
                                         with ehhc1:
                                             try:
@@ -959,14 +990,14 @@ with tab_staff:
                                                 cur_hs = time_type(int(hs_parts[0]), int(hs_parts[1]))
                                             except Exception:
                                                 cur_hs = time_type(10,0)
-                                            e_hs = st.time_input("半休開始", value=cur_hs, key=f"ehs_{hdid}_{hi}")
+                                            e_hs = st.time_input("業務開始", value=cur_hs, key=f"ehs_{hdid}_{hi}")
                                         with ehhc2:
                                             try:
-                                                he_parts = fmt_time(hd.get("half_end","14:00")).split(":")
+                                                he_parts = fmt_time(hd.get("half_end","14:30")).split(":")
                                                 cur_he = time_type(int(he_parts[0]), int(he_parts[1]))
                                             except Exception:
-                                                cur_he = time_type(14,0)
-                                            e_he = st.time_input("半休終了", value=cur_he, key=f"ehe_{hdid}_{hi}")
+                                                cur_he = time_type(14,30)
+                                            e_he = st.time_input("業務終了", value=cur_he, key=f"ehe_{hdid}_{hi}")
                                     else:
                                         e_hs = None; e_he = None
 
