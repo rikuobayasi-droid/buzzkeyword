@@ -450,6 +450,81 @@ with tab_timeline:
                     else:
                         st.markdown('<div style="padding:4px 12px 4px 16px;color:#9ca3af;font-size:.8rem;">予定なし（終日空き）</div>', unsafe_allow_html=True)
 
+        # ══════════════════════════════════════════════════════
+        # 【プレビュー】2行表示の3パターン（気に入ったものを選んでください）
+        # ══════════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown('<div class="section-head">📋 予定の2行表示（3パターン比較）</div>', unsafe_allow_html=True)
+        st.caption("以下の3つから好みの表示を選んでください。あとで1つに絞ります。")
+
+        # この日の予定を担当者順に取得
+        preview_events = pd.DataFrame()
+        if not day_events.empty:
+            preview_events = day_events[day_events["status"] != "cancelled"].copy()
+            if not staff_df.empty:
+                preview_events = preview_events.merge(
+                    staff_df[["id","name"]].rename(columns={"id":"staff_id","name":"_sname"}),
+                    on="staff_id", how="left"
+                )
+            preview_events = preview_events.sort_values(["_sname","planned_start"]) if "_sname" in preview_events.columns else preview_events
+
+        if preview_events.empty:
+            st.markdown('<div class="info-box">この日の予定がありません。予定を追加すると3パターンが表示されます。</div>', unsafe_allow_html=True)
+        else:
+            # ── パターンA: 左に色帯、右に2行 ─────────────────────────────
+            st.markdown("**パターンA：左に色帯 + 2行テキスト**")
+            for _, ev in preview_events.iterrows():
+                sname = ev.get("_sname","")
+                color = get_task_color(ev["task_type"], tasks_df)
+                loc   = ev.get("location","") or "—"
+                is_grp = bool(ev.get("is_group", False))
+                grp = "👥 " if is_grp else ""
+                st.markdown(
+                    f'<div style="display:flex;margin:6px 0;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1);">'
+                    f'<div style="width:6px;background:{color};"></div>'
+                    f'<div style="flex:1;padding:8px 12px;background:white;">'
+                    f'<div style="font-weight:700;color:#1e3a5f;">{grp}{ev["task_type"]}　<span style="font-weight:400;color:#6b7280;font-size:.85rem;">📍{loc}</span>　<span style="font-weight:400;color:#9ca3af;font-size:.8rem;">{sname}</span></div>'
+                    f'<div style="color:#374151;font-size:.9rem;margin-top:2px;">🕐 {fmt_time(ev["planned_start"])} 〜 {fmt_time(ev["planned_end"])}</div>'
+                    f'</div></div>',
+                    unsafe_allow_html=True
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ── パターンB: 業務色の背景ボックス ──────────────────────────
+            st.markdown("**パターンB：業務色の背景ボックス**")
+            for _, ev in preview_events.iterrows():
+                sname = ev.get("_sname","")
+                color = get_task_color(ev["task_type"], tasks_df)
+                loc   = ev.get("location","") or "—"
+                is_grp = bool(ev.get("is_group", False))
+                grp = "👥 " if is_grp else ""
+                st.markdown(
+                    f'<div style="margin:6px 0;padding:10px 14px;border-radius:8px;background:{color}22;border-left:5px solid {color};">'
+                    f'<div style="font-weight:700;color:{color};font-size:.95rem;">{grp}{ev["task_type"]}　📍{loc}</div>'
+                    f'<div style="color:#374151;font-size:.88rem;margin-top:3px;">🕐 {fmt_time(ev["planned_start"])}〜{fmt_time(ev["planned_end"])}　｜　{sname}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ── パターンC: カード型（枠線・アイコン強調）─────────────────
+            st.markdown("**パターンC：カード型（枠線）**")
+            for _, ev in preview_events.iterrows():
+                sname = ev.get("_sname","")
+                color = get_task_color(ev["task_type"], tasks_df)
+                loc   = ev.get("location","") or "—"
+                is_grp = bool(ev.get("is_group", False))
+                grp = "👥 " if is_grp else ""
+                st.markdown(
+                    f'<div style="margin:6px 0;padding:0;border:1.5px solid {color};border-radius:10px;overflow:hidden;">'
+                    f'<div style="background:{color};color:white;padding:5px 12px;font-weight:700;font-size:.9rem;">{grp}{ev["task_type"]}　<span style="float:right;font-weight:400;">{sname}</span></div>'
+                    f'<div style="padding:6px 12px;background:white;font-size:.88rem;color:#374151;">🕐 {fmt_time(ev["planned_start"])} 〜 {fmt_time(ev["planned_end"])}　📍 {loc}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
         # ── この日にクイック予定追加 ──────────────────────────────────────────
         with st.expander(f"＋ {view_date} に予定を追加"):
             q_staff_options = {s["name"]: int(s["id"]) for _, s in staff_df.iterrows() if s.get("is_active", True)}
