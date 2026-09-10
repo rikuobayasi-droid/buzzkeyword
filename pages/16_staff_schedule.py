@@ -450,44 +450,6 @@ with tab_timeline:
                     else:
                         st.markdown('<div style="padding:4px 12px 4px 16px;color:#9ca3af;font-size:.8rem;">予定なし（終日空き）</div>', unsafe_allow_html=True)
 
-        # ── 予定一覧（カード型・パターンC）────────────────────────────────────
-        st.markdown("---")
-        st.markdown('<div class="section-head">本日の予定一覧</div>', unsafe_allow_html=True)
-
-        # この日の予定を担当者順に取得
-        card_events = pd.DataFrame()
-        if not day_events.empty:
-            card_events = day_events[day_events["status"] != "cancelled"].copy()
-            if not staff_df.empty:
-                card_events = card_events.merge(
-                    staff_df[["id","name"]].rename(columns={"id":"staff_id","name":"_sname"}),
-                    on="staff_id", how="left"
-                )
-            card_events = card_events.sort_values(["_sname","planned_start"]) if "_sname" in card_events.columns else card_events
-
-        if card_events.empty:
-            st.markdown('<div class="info-box">この日の予定はありません</div>', unsafe_allow_html=True)
-        else:
-            for _, ev in card_events.iterrows():
-                sname = ev.get("_sname","")
-                color = get_task_color(ev["task_type"], tasks_df)
-                loc   = ev.get("location","") or "—"
-                is_grp = bool(ev.get("is_group", False))
-                grp = "👥 " if is_grp else ""
-                # 実績時間があれば表示
-                actual = ""
-                if ev.get("actual_start"):
-                    a_s = fmt_time(ev.get("actual_start"))
-                    a_e = fmt_time(ev.get("actual_end")) if ev.get("actual_end") else "進行中"
-                    actual = f'　<span style="color:#15803d;">実績 {a_s}〜{a_e}</span>'
-                st.markdown(
-                    f'<div style="margin:6px 0;padding:0;border:1.5px solid {color};border-radius:10px;overflow:hidden;">'
-                    f'<div style="background:{color};color:white;padding:5px 12px;font-weight:700;font-size:.9rem;">{grp}{ev["task_type"]}　<span style="float:right;font-weight:400;">{sname}</span></div>'
-                    f'<div style="padding:6px 12px;background:white;font-size:.88rem;color:#374151;">🕐 {fmt_time(ev["planned_start"])} 〜 {fmt_time(ev["planned_end"])}　📍 {loc}{actual}</div>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
         # ── この日にクイック予定追加 ──────────────────────────────────────────
         with st.expander(f"＋ {view_date} に予定を追加"):
             q_staff_options = {s["name"]: int(s["id"]) for _, s in staff_df.iterrows() if s.get("is_active", True)}
