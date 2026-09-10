@@ -269,6 +269,11 @@ with tab_timeline:
         SLOTS.append(round(_t, 2))
         _t += grain
 
+    def slot_label(sf):
+        """スロットのfloat値を HH:MM に変換"""
+        hh = int(sf); mm = int(round((sf - hh) * 60))
+        return f"{hh:02d}:{mm:02d}"
+
     # ── 日付ナビゲーション（前日/今日/翌日）────────────────────────────────────
     nc1, nc2, nc3, nc4 = st.columns([1, 1, 1, 2])
     with nc1:
@@ -300,10 +305,13 @@ with tab_timeline:
 
         if not is_mobile:
             # ── タイムライン表示（PC向け）────────────────────────────────────
+            # ヘッダー: 正時のみラベル表示
             header_html = '<div style="display:flex;border-bottom:2px solid #1e3a5f;padding-bottom:4px;margin-bottom:4px;">'
             header_html += '<div style="width:80px;flex-shrink:0;font-weight:700;font-size:.8rem;">従業員</div>'
-            for h in HOURS:
-                header_html += f'<div style="flex:1;text-align:center;font-size:.7rem;color:#6b7280;">{h}:00</div>'
+            for sf in SLOTS:
+                lbl = f"{int(sf)}:00" if abs(sf - int(sf)) < 0.01 else ""
+                fsize = ".65rem" if grain >= 1.0 else ".5rem"
+                header_html += f'<div style="flex:1;text-align:center;font-size:{fsize};color:#6b7280;border-left:1px solid #f0f0f0;">{lbl}</div>'
             header_html += '</div>'
             st.markdown(header_html, unsafe_allow_html=True)
 
@@ -329,53 +337,51 @@ with tab_timeline:
                 if not is_work and (s_events.empty):
                     row_html += '<div style="flex:1;background:#f3f4f6;color:#9ca3af;text-align:center;line-height:36px;font-size:.8rem;border-radius:4px;">休日</div>'
                 else:
-                    w_start_f = time_to_float(w_start) if w_start else HOURS[0]
-                    w_end_f   = time_to_float(w_end) if w_end else HOURS[-1]+1
-                    for h in HOURS:
+                    w_start_f = time_to_float(w_start) if w_start else SLOTS[0]
+                    w_end_f   = time_to_float(w_end) if w_end else SLOTS[-1]+grain
+                    for sf in SLOTS:
+                        sf_end = sf + grain  # このスロットの終了時刻
+                        # このスロットにかかる予定を探す（範囲が重なるか）
                         slot_events = []
                         if not s_events.empty:
                             for _, ev in s_events.iterrows():
                                 ps = time_to_float(ev["planned_start"]); pe = time_to_float(ev["planned_end"])
-                                if ps is not None and pe is not None and ps <= h < pe:
+                                if ps is not None and pe is not None and ps < sf_end and pe > sf:
                                     slot_events.append(ev)
                         if slot_events:
                             ev = slot_events[0]
                             eid_check = int(ev["id"])
                             ps = time_to_float(ev["planned_start"])
-                            is_start_cell = (ps is not None and int(ps) == h)  # 予定開始時刻のセルか
+                            # 予定開始スロットか（開始時刻がこのスロット範囲内）
+                            is_start_cell = (ps is not None and sf <= ps < sf_end)
                             loc_text = str(ev.get("location","") or "")
-                            # ツールチップ（全情報）
                             tip = f'{ev["task_type"]} {fmt_time(ev["planned_start"])}〜{fmt_time(ev["planned_end"])}'
                             if loc_text: tip += f' 📍{loc_text}'
-                            # この時刻が休憩時間内かチェック（休憩テーブルベース）
-                            if hour_in_break(h, eid_check, breaks_df):
-                                row_html += '<div style="flex:1;background:#f59e0b;color:white;text-align:center;line-height:36px;font-size:.65rem;overflow:hidden;white-space:nowrap;" title="休憩中">🍽️休憩</div>'
+                            # 休憩チェック（スロット開始時刻で判定）
+                            if hour_in_break(sf, eid_check, breaks_df):
+                                row_html += '<div style="flex:1;background:#f59e0b;color:white;text-align:center;line-height:36px;font-size:.58rem;overflow:hidden;white-space:nowrap;" title="休憩中">🍽️</div>'
                             else:
                                 color = get_task_color(ev["task_type"], tasks_df)
                                 is_grp = bool(ev.get("is_group", False))
-                                # 表示テキスト: 開始セルは業務名、場所があれば次のセルで場所
+                                # 開始スロットのみ業務名を表示
                                 if is_start_cell:
-                                    label = ("👥" if is_grp else "") + ev["task_type"][:4]
-                                elif loc_text and ps is not None and int(ps) + 1 == h:
-                                    # 開始の次のセルに場所を表示
-                                    label = f'📍{loc_text[:4]}'
+                                    name_len = 4 if grain >= 1.0 else (2 if grain >= 0.5 else 1)
+                                    label = ("👥" if is_grp else "") + ev["task_type"][:name_len]
                                 else:
                                     label = ""
                                 border_style = "border:2px solid #7c3aed;box-sizing:border-box;" if is_grp else ""
                                 line_h = "34px" if is_grp else "36px"
-                                row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:{line_h};font-size:.62rem;overflow:hidden;white-space:nowrap;{border_style}" title="{tip}">{label}</div>'
+                                row_html += f'<div style="flex:1;background:{color};color:white;text-align:center;line-height:{line_h};font-size:.58rem;overflow:hidden;white-space:nowrap;{border_style}" title="{tip}">{label}</div>'
                         elif is_half and half_ws is not None and half_we is not None:
-                            # 半休の日: 業務時間帯（half_ws〜half_we）は空き、それ以外は半休
-                            if half_ws <= h < half_we:
+                            # 半休の日: 業務時間帯は空き、それ以外は半休
+                            if half_ws <= sf < half_we:
                                 row_html += '<div style="flex:1;background:#ecfdf5;border:1px dashed #a7f3d0;" title="業務可能"></div>'
-                            elif w_start_f <= h < w_end_f:
-                                # 半休時間帯
-                                is_half_start = (int(half_we) == h) if half_we else False
-                                lbl = "半休" if (h == int(half_we) if half_we else False) else ""
-                                row_html += f'<div style="flex:1;background:#fed7aa;color:#c2410c;text-align:center;line-height:36px;font-size:.62rem;overflow:hidden;white-space:nowrap;" title="半休">{lbl}</div>'
+                            elif w_start_f <= sf < w_end_f:
+                                lbl = "半休" if (grain >= 1.0 and abs(sf - half_we) < grain) else ""
+                                row_html += f'<div style="flex:1;background:#fed7aa;color:#c2410c;text-align:center;line-height:36px;font-size:.58rem;overflow:hidden;white-space:nowrap;" title="半休">{lbl}</div>'
                             else:
                                 row_html += '<div style="flex:1;background:#fafafa;"></div>'
-                        elif is_work and w_start_f <= h < w_end_f:
+                        elif is_work and w_start_f <= sf < w_end_f:
                             row_html += '<div style="flex:1;background:#ecfdf5;border:1px dashed #a7f3d0;" title="空き"></div>'
                         else:
                             row_html += '<div style="flex:1;background:#fafafa;"></div>'
