@@ -253,9 +253,21 @@ with tab_dash:
 with tab_timeline:
     view_date = st.session_state["sched_date"]
 
-    # ── 表示モード切り替え ────────────────────────────────────────────────────
-    view_mode = st.radio("表示モード", ["タイムライン（PC向け）", "リスト（スマホ向け）"],
-                          horizontal=True, key="view_mode")
+    # ── 表示モード・時間刻み切り替え ──────────────────────────────────────────
+    vm1, vm2 = st.columns(2)
+    with vm1:
+        view_mode = st.radio("表示モード", ["タイムライン（PC向け）", "リスト（スマホ向け）"],
+                              horizontal=True, key="view_mode")
+    with vm2:
+        grain_label = st.radio("時間の細かさ", ["1時間", "30分", "15分"],
+                               horizontal=True, key="time_grain")
+    grain = {"1時間": 1.0, "30分": 0.5, "15分": 0.25}[grain_label]
+    # スロット（開始時刻のfloat値）を生成: 8.0, 8.5, 9.0 ...
+    SLOTS = []
+    _t = 8.0
+    while _t < 22.0:
+        SLOTS.append(round(_t, 2))
+        _t += grain
 
     # ── 日付ナビゲーション（前日/今日/翌日）────────────────────────────────────
     nc1, nc2, nc3, nc4 = st.columns([1, 1, 1, 2])
