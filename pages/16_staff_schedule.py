@@ -68,6 +68,24 @@ def calc_end_time(start_t, hours_dur):
     if m == 60: h += 1; m = 0
     return f"{h:02d}:{m:02d}"
 
+def coerce_id_columns(df, cols):
+    """
+    ID・外部キー列を数値型に統一する（根本対処）。
+
+    Supabaseの列定義やデータ投入経路の違いで、staff_id / event_id などが
+    文字列("5")と数値(5)で混在することがある。この状態で DataFrame の値と
+    int を == 比較すると型不一致で常に False となり、
+    「タイムラインに予定が表示されない」「担当者名が引けない」等の不具合になる。
+    ここで数値へ寄せて型を揃えることで、以降のすべての比較箇所を一括で正常化する。
+    非数値・欠損は NaN になり、== 比較では False 扱いになるため安全。
+    """
+    if df is None or df.empty:
+        return df
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
 @st.cache_data(ttl=60)
 def load_all():
     tasks    = to_df(sb_select("staff_task_types", order="sort_order"))
@@ -82,6 +100,15 @@ def load_all():
         holidays = to_df(sb_select("staff_holidays", order="holiday_date"))
     except Exception:
         holidays = pd.DataFrame()
+
+    # ── ID/外部キー列の型統一（staff_id の文字列/数値混在による不具合対策）──
+    tasks    = coerce_id_columns(tasks,    ["id"])
+    staff    = coerce_id_columns(staff,    ["id"])
+    events   = coerce_id_columns(events,   ["id", "staff_id"])
+    workdays = coerce_id_columns(workdays, ["id", "staff_id"])
+    breaks   = coerce_id_columns(breaks,   ["id", "event_id", "staff_id"])
+    holidays = coerce_id_columns(holidays, ["id", "staff_id"])
+
     return tasks, staff, events, workdays, breaks, holidays
 
 def get_event_breaks(event_id, breaks_df):
@@ -300,6 +327,13 @@ with tab_timeline:
         day_events = pd.DataFrame()
         if not events_df.empty:
             day_events = events_df[events_df["event_date"].astype(str) == str(view_date)].copy()
+            # 予定が表示されない不具合対策（直接対処）:
+            # staff_events.staff_id が文字列で保存されているケースがあり、
+            # タイムライン描画側の比較（day_events["staff_id"] == sid, sid は int）と
+            # 型が一致せず、常に空になってしまう。ここで staff_id を数値へ統一する。
+            # ※ 通常は load_all() 側で統一済みだが、比較の直前でも保証しておく。
+            if not day_events.empty and "staff_id" in day_events.columns:
+                day_events["staff_id"] = pd.to_numeric(day_events["staff_id"], errors="coerce")
 
         is_mobile = (view_mode == "リスト（スマホ向け）")
 
