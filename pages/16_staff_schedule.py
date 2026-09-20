@@ -145,7 +145,7 @@ def get_workday_v2(staff_row, target_date, workdays_df, holidays_df):
     if not workdays_df.empty:
         wd = workdays_df[
             (workdays_df["staff_id"] == sid) &
-            (workdays_df["work_date"].astype(str) == str(target_date))
+            (workdays_df["work_date"].astype(str).str.slice(0, 10) == str(target_date))
         ]
         if not wd.empty:
             row = wd.iloc[0]
@@ -156,7 +156,7 @@ def get_workday_v2(staff_row, target_date, workdays_df, holidays_df):
         if not holidays_df.empty:
             hd = holidays_df[
                 (holidays_df["staff_id"] == sid) &
-                (holidays_df["holiday_date"].astype(str) == str(target_date))
+                (holidays_df["holiday_date"].astype(str).str.slice(0, 10) == str(target_date))
             ]
             if not hd.empty:
                 htype = hd.iloc[0].get("holiday_type", "regular") or "regular"
@@ -182,7 +182,7 @@ def get_holiday_info(staff_id, target_date, holidays_df):
     if holidays_df.empty: return None
     hd = holidays_df[
         (holidays_df["staff_id"] == staff_id) &
-        (holidays_df["holiday_date"].astype(str) == str(target_date))
+        (holidays_df["holiday_date"].astype(str).str.slice(0, 10) == str(target_date))
     ]
     if hd.empty: return None
     row = hd.iloc[0]
@@ -227,13 +227,13 @@ with tab_dash:
 
     today_events = pd.DataFrame()
     if not events_df.empty:
-        today_events = events_df[events_df["event_date"].astype(str) == str(today)].copy()
+        today_events = events_df[events_df["event_date"].astype(str).str.slice(0, 10) == str(today)].copy()
         today_events = today_events[today_events["status"] != "cancelled"]
 
     # 本日出勤スタッフ数（staff_work_days ベース）
     working_staff = 0
     if not workdays_df.empty:
-        working_staff = workdays_df[workdays_df["work_date"].astype(str) == str(today)]["staff_id"].nunique()
+        working_staff = workdays_df[workdays_df["work_date"].astype(str).str.slice(0, 10) == str(today)]["staff_id"].nunique()
 
     total_events = len(today_events)
     need_action  = len(today_events[today_events["status"] == "need_action"]) if not today_events.empty else 0
@@ -251,7 +251,7 @@ with tab_dash:
     st.markdown('<div class="section-head">⚠️ 要対応一覧</div>', unsafe_allow_html=True)
     if not events_df.empty:
         upcoming = events_df[
-            (events_df["event_date"].astype(str) >= str(today)) &
+            (events_df["event_date"].astype(str).str.slice(0, 10) >= str(today)) &
             (events_df["status"].isin(["need_action","adjusting","need_sub"]))
         ].copy().sort_values(["event_date","planned_start"])
         if upcoming.empty:
@@ -326,7 +326,7 @@ with tab_timeline:
     else:
         day_events = pd.DataFrame()
         if not events_df.empty:
-            day_events = events_df[events_df["event_date"].astype(str) == str(view_date)].copy()
+            day_events = events_df[events_df["event_date"].astype(str).str.slice(0, 10) == str(view_date)].copy()
             # 予定が表示されない不具合対策（直接対処）:
             # staff_events.staff_id が文字列で保存されているケースがあり、
             # タイムライン描画側の比較（day_events["staff_id"] == sid, sid は int）と
@@ -483,6 +483,43 @@ with tab_timeline:
                                     )
                     else:
                         st.markdown('<div style="padding:4px 12px 4px 16px;color:#9ca3af;font-size:.8rem;">予定なし（終日空き）</div>', unsafe_allow_html=True)
+
+        # ── 診断: 予定が表示されないときの原因切り分け ──────────────────────────
+        with st.expander("🔧 予定が表示されない場合の診断"):
+            st.caption("この日の生データを確認します。日付の型ズレ・staff_idの型ズレ・"
+                       "planned_start未設定など、タイムラインに描画されない原因を切り分けます。")
+            if events_df.empty:
+                st.write("staff_events テーブルが空です（予定が1件も登録されていません）。")
+            else:
+                _norm = events_df["event_date"].astype(str).str.slice(0, 10)
+                _match = events_df[_norm == str(view_date)]
+                st.write(f"- staff_events 総件数: **{len(events_df)}**")
+                st.write(f"- {view_date} に一致する件数: **{len(_match)}**")
+                st.write(f"- event_date のサンプル（生の値）: `{list(events_df['event_date'].astype(str).head(3))}`")
+                sid_dtype = str(events_df['staff_id'].dtype) if 'staff_id' in events_df.columns else 'なし'
+                mem_dtype = str(staff_df['id'].dtype) if not staff_df.empty else 'N/A'
+                st.write(f"- staff_events.staff_id の型: `{sid_dtype}` / staff_members.id の型: `{mem_dtype}`")
+                if not _match.empty:
+                    _cols = [c for c in ["staff_id", "task_type", "event_date",
+                                         "planned_start", "planned_end", "status"]
+                             if c in _match.columns]
+                    st.dataframe(_match[_cols], use_container_width=True, hide_index=True)
+                    if "planned_start" in _match.columns:
+                        _nnull = int(_match["planned_start"].isna().sum())
+                        if _nnull:
+                            st.warning(f"planned_start が未設定の予定が {_nnull} 件あります。"
+                                       "開始時刻が無い予定はタイムラインに描画されません。")
+                    # staff_id が staff_members に存在するか
+                    if not staff_df.empty and "staff_id" in _match.columns:
+                        _known = set(pd.to_numeric(staff_df["id"], errors="coerce").dropna().tolist())
+                        _evsid = set(pd.to_numeric(_match["staff_id"], errors="coerce").dropna().tolist())
+                        _orphan = _evsid - _known
+                        if _orphan:
+                            st.warning(f"どの従業員にも紐づかない staff_id があります: {sorted(_orphan)}。"
+                                       "従業員が無効化・削除されているか、staff_id がズレています。")
+                else:
+                    st.info("この日付に一致する予定はありませんでした。別の日付を選ぶか、"
+                            "上の event_date サンプルの日付を「日付」ピッカーで選んで確認してください。")
 
         # ── この日にクイック予定追加 ──────────────────────────────────────────
         with st.expander(f"＋ {view_date} に予定を追加"):
@@ -832,8 +869,8 @@ with tab_calendar:
             if not holidays_df.empty:
                 sh = holidays_df[
                     (holidays_df["staff_id"] == sid) &
-                    (holidays_df["holiday_date"].astype(str) >= month_start_str) &
-                    (holidays_df["holiday_date"].astype(str) <= month_end_str)
+                    (holidays_df["holiday_date"].astype(str).str.slice(0, 10) >= month_start_str) &
+                    (holidays_df["holiday_date"].astype(str).str.slice(0, 10) <= month_end_str)
                 ]
                 for _, h in sh.iterrows():
                     ht = h.get("holiday_type", "regular") or "regular"
@@ -859,6 +896,203 @@ with tab_calendar:
               <div class="metric-card"><div class="val">{int(df_sum["忌引き"].sum())}</div><div class="lbl">忌引き（合計）</div></div>
               <div class="metric-card"><div class="val">{int(df_sum["特別休暇"].sum())}</div><div class="lbl">特別休暇（合計）</div></div>
             </div>""", unsafe_allow_html=True)
+
+        # ══════════════════════════════════════════════════════
+        # 出勤 / 休み の一括編集パネル
+        #   ① アルバイトの出勤日変更 ② 休み↔出勤の素早い切替
+        #   雇用形態を自動判定し、アルバイト=staff_work_days /
+        #   正社員=staff_holidays に反映する。
+        # ══════════════════════════════════════════════════════
+        st.markdown('<div class="section-head">🗓️ 出勤 / 休み の一括編集</div>', unsafe_allow_html=True)
+
+        # 直前の保存結果を rerun 後に表示
+        _bulk_msg = st.session_state.pop("bulk_edit_result", None)
+        if _bulk_msg:
+            st.markdown(f'<div class="success-box">{_bulk_msg}</div>', unsafe_allow_html=True)
+
+        edit_staff_opts = {s["name"]: int(s["id"]) for _, s in active_staff_cal.iterrows()}
+        if not edit_staff_opts:
+            st.markdown('<div class="info-box">有効な従業員がいません</div>', unsafe_allow_html=True)
+        else:
+            st.caption(f"{cal_month.year}年{cal_month.month}月について、各日のチェックで出勤/休みを切り替え、"
+                       "最後に【この内容で保存】を押します。"
+                       "アルバイト・業務委託は出勤日（staff_work_days）、"
+                       "契約社員・正社員は休日（staff_holidays）として自動反映されます。")
+
+            be1, be2, be3 = st.columns([2, 1, 1])
+            with be1:
+                sel_name = st.selectbox("従業員", list(edit_staff_opts.keys()), key="bulk_edit_staff")
+            sel_sid = edit_staff_opts[sel_name]
+            sel_row = active_staff_cal[active_staff_cal["id"] == sel_sid].iloc[0]
+            sel_emp = sel_row.get("employment_type", "parttime") or "parttime"
+            is_ft   = (sel_emp == "fulltime")
+
+            # 新規「出勤」に適用する勤務時間（主にアルバイト用）。既定=従業員のデフォルト勤務時間。
+            def _hhmm(v, fb):
+                try:
+                    _h, _m = map(int, str(v)[:5].split(":")); return time_type(_h, _m)
+                except Exception:
+                    return fb
+            _d_start = _hhmm(sel_row.get("default_start"), time_type(10, 0))
+            _d_end   = _hhmm(sel_row.get("default_end"),   time_type(19, 0))
+            with be2:
+                bulk_start = st.time_input("出勤の開始", value=_d_start, key="bulk_edit_start")
+            with be3:
+                bulk_end   = st.time_input("出勤の終了", value=_d_end,   key="bulk_edit_end")
+
+            emp_label = "契約社員・正社員（休日を登録）" if is_ft else "アルバイト・業務委託（出勤日を登録）"
+            st.caption(f"対象: **{sel_name}** さん / 雇用形態: **{emp_label}**")
+
+            month_tag = f"{cal_month.year}-{cal_month.month:02d}"
+            nonce_key = f"bulk_nonce_{sel_sid}_{month_tag}"
+            over_key  = f"bulk_over_{sel_sid}_{month_tag}"
+            if nonce_key not in st.session_state:
+                st.session_state[nonce_key] = 0
+
+            # 現在のDB状態（各日が出勤か / 現在の表示状態 / 特別休暇の日）
+            base_work, cur_state, special_days = [], [], {}
+            for d in days:
+                is_w = bool(get_workday_v2(sel_row, d, workdays_df, holidays_df)[0])
+                hinfo = get_holiday_info(sel_sid, d, holidays_df)
+                if hinfo and hinfo["type"] == "half":
+                    stt = "半休"
+                elif hinfo and hinfo["type"] != "regular":
+                    stt = hinfo["label"]
+                    special_days[str(d)] = hinfo["label"]
+                elif is_w:
+                    stt = "出勤"
+                else:
+                    stt = "休み"
+                base_work.append(is_w)
+                cur_state.append(stt)
+
+            # クイック設定（override + nonce で data_editor を再初期化）
+            st.write("クイック設定:")
+            qb1, qb2, qb3, qb4 = st.columns(4)
+            if qb1.button("全部 出勤", use_container_width=True, key="bulk_all_on"):
+                st.session_state[over_key] = [True] * len(days)
+                st.session_state[nonce_key] += 1; st.rerun()
+            if qb2.button("全部 休み", use_container_width=True, key="bulk_all_off"):
+                st.session_state[over_key] = [False] * len(days)
+                st.session_state[nonce_key] += 1; st.rerun()
+            if qb3.button("平日出勤 / 土日休み", use_container_width=True, key="bulk_weekday"):
+                st.session_state[over_key] = [d.weekday() < 5 for d in days]
+                st.session_state[nonce_key] += 1; st.rerun()
+            if qb4.button("現状に戻す", use_container_width=True, key="bulk_reset"):
+                st.session_state.pop(over_key, None)
+                st.session_state[nonce_key] += 1; st.rerun()
+
+            # 表示する「出勤」列: override があればそれ、なければ現状DB
+            work_col = st.session_state.get(over_key, base_work)
+            if not isinstance(work_col, list) or len(work_col) != len(days):
+                work_col = base_work
+
+            edit_df = pd.DataFrame({
+                "日付": [f"{d.month}/{d.day}" for d in days],
+                "曜日": [WEEKDAY_JP[d.weekday()] for d in days],
+                "出勤": work_col,
+                "現在の状態": cur_state,
+            })
+
+            editor_key = f"bulk_editor_{sel_sid}_{month_tag}_{st.session_state[nonce_key]}"
+            edited = st.data_editor(
+                edit_df,
+                key=editor_key,
+                hide_index=True,
+                use_container_width=True,
+                num_rows="fixed",
+                column_config={
+                    "出勤": st.column_config.CheckboxColumn("出勤", help="チェック=出勤 / 外す=休み"),
+                },
+                disabled=["日付", "曜日", "現在の状態"],
+            )
+
+            allow_special = False
+            if special_days:
+                _sp = " / ".join(f"{k[5:]}({v})" for k, v in special_days.items())
+                st.caption(f"⚠️ 特別休暇が登録されている日: {_sp}")
+                allow_special = st.checkbox(
+                    "特別休暇（有給・忌引き・特別休暇）も「出勤」に変更してよい（休暇記録が削除されます）",
+                    value=False, key="bulk_allow_special")
+
+            if st.button("💾 この内容で保存", type="primary", key="bulk_save"):
+                desired = list(edited["出勤"])
+                on_days, off_days = [], []          # 休み→出勤 / 出勤→休み
+                for d, cur, des in zip(days, base_work, desired):
+                    if bool(cur) != bool(des):
+                        (on_days if des else off_days).append(d)
+
+                made_on = made_off = skipped = 0
+                skip_list = []
+
+                # 休み → 出勤
+                for d in on_days:
+                    hinfo = get_holiday_info(sel_sid, d, holidays_df)
+                    is_special = bool(hinfo and hinfo["type"] in ("paid", "bereavement", "special"))
+                    if is_special and not allow_special:
+                        skipped += 1; skip_list.append(f"{d.month}/{d.day}({hinfo['short']})"); continue
+                    if is_ft:
+                        # 正社員: 休日レコードを削除 → 既定で出勤
+                        if hinfo:
+                            sb_delete("staff_holidays", {"staff_id": sel_sid, "holiday_date": str(d)})
+                    else:
+                        # アルバイト: 出勤日レコードを追加（重複時は追加しない）
+                        exists = False
+                        if not workdays_df.empty:
+                            exists = not workdays_df[
+                                (workdays_df["staff_id"] == sel_sid) &
+                                (workdays_df["work_date"].astype(str).str.slice(0, 10) == str(d))
+                            ].empty
+                        if not exists:
+                            sb_insert("staff_work_days", {
+                                "staff_id":   sel_sid,
+                                "work_date":  str(d),
+                                "start_time": fmt_time(bulk_start),
+                                "end_time":   fmt_time(bulk_end),
+                            })
+                    made_on += 1
+
+                # 出勤 → 休み
+                for d in off_days:
+                    if is_ft:
+                        # 正社員: 個別出勤日の上書きがあれば削除し、休日レコードを用意
+                        sb_delete("staff_work_days", {"staff_id": sel_sid, "work_date": str(d)})
+                        hinfo = get_holiday_info(sel_sid, d, holidays_df)
+                        if hinfo:
+                            if hinfo["type"] == "half":
+                                sb_update("staff_holidays",
+                                          {"holiday_type": "regular", "half_start": None, "half_end": None},
+                                          {"staff_id": sel_sid, "holiday_date": str(d)})
+                        else:
+                            sb_insert("staff_holidays", {
+                                "staff_id":     sel_sid,
+                                "holiday_date": str(d),
+                                "holiday_type": "regular",
+                                "half_start":   None,
+                                "half_end":     None,
+                            })
+                    else:
+                        # アルバイト: 出勤日レコードを削除
+                        sb_delete("staff_work_days", {"staff_id": sel_sid, "work_date": str(d)})
+                    made_off += 1
+
+                if made_on == 0 and made_off == 0 and skipped == 0:
+                    st.markdown('<div class="info-box">変更はありませんでした</div>', unsafe_allow_html=True)
+                else:
+                    parts = []
+                    if made_on:  parts.append(f"出勤に {made_on} 日")
+                    if made_off: parts.append(f"休みに {made_off} 日")
+                    if parts:
+                        msg = f"✅ {sel_name} さん（{cal_month.month}月）: " + " / ".join(parts)
+                    else:
+                        msg = f"✅ {sel_name} さん（{cal_month.month}月）"
+                    if skipped:
+                        msg += f" ／ 特別休暇のためスキップ {skipped} 日: {', '.join(skip_list)}"
+                    st.session_state["bulk_edit_result"] = msg
+                    st.session_state.pop(over_key, None)
+                    st.session_state[nonce_key] += 1
+                    st.cache_data.clear()
+                    st.rerun()
 
 # ════════════════════════════════════════════════════════
 # タブ3: 従業員管理（勤務時間廃止・出勤日登録方式）
@@ -924,7 +1158,7 @@ with tab_staff:
                 if not workdays_df.empty:
                     existing_wd = workdays_df[
                         (workdays_df["staff_id"] == sid) &
-                        (workdays_df["work_date"].astype(str) == str(wd_date))
+                        (workdays_df["work_date"].astype(str).str.slice(0, 10) == str(wd_date))
                     ]
                 if not existing_wd.empty:
                     sb_update("staff_work_days", {
@@ -978,7 +1212,7 @@ with tab_staff:
                     if not holidays_df.empty:
                         existing_hd = holidays_df[
                             (holidays_df["staff_id"] == sid) &
-                            (holidays_df["holiday_date"].astype(str) == str(hd_date))
+                            (holidays_df["holiday_date"].astype(str).str.slice(0, 10) == str(hd_date))
                         ]
                     payload = {
                         "staff_id":     sid,
@@ -1002,7 +1236,7 @@ with tab_staff:
                 ft_ids = list(ft_options.values())
                 future_hd = holidays_df[
                     (holidays_df["staff_id"].isin(ft_ids)) &
-                    (holidays_df["holiday_date"].astype(str) >= str(date.today()))
+                    (holidays_df["holiday_date"].astype(str).str.slice(0, 10) >= str(date.today()))
                 ].sort_values("holiday_date")
                 if not future_hd.empty:
                     with st.expander(f"今後の休日を確認・編集（{len(future_hd)}件）"):
@@ -1082,7 +1316,7 @@ with tab_staff:
             if not workdays_df.empty:
                 future_wd = workdays_df[
                     (workdays_df["staff_id"] == sid) &
-                    (workdays_df["work_date"].astype(str) >= str(date.today()))
+                    (workdays_df["work_date"].astype(str).str.slice(0, 10) >= str(date.today()))
                 ].sort_values("work_date")
 
             emp_type = s.get("employment_type", "parttime") or "parttime"
@@ -1274,7 +1508,7 @@ with tab_events:
                                 if c_skills and ev_task not in c_skills: continue
                                 c_events = events_df[
                                     (events_df["staff_id"] == cs["id"]) &
-                                    (events_df["event_date"].astype(str) == str(ev_date))
+                                    (events_df["event_date"].astype(str).str.slice(0, 10) == str(ev_date))
                                 ] if not events_df.empty else pd.DataFrame()
                                 busy = False
                                 start_f = time_to_float(ev_start); end_f = time_to_float(calc_end)
